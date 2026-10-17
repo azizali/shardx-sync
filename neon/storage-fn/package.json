@@ -1,5 +1,5 @@
 {
-  "name": "shardx-sync-storage-fn",
+  "name": "@shardx-sync/storage-fn",
   "private": true,
   "type": "module",
   "description": "Neon Function: verifies a Neon Auth JWT and issues presigned Object Storage URLs",
@@ -7,5 +7,8 @@
     "@aws-sdk/client-s3": "^3",
     "@aws-sdk/s3-request-presigner": "^3",
     "jose": "^6"
+  },
+  "scripts": {
+    "deploy": "neon functions deploy shardxstorage --project-id frosty-water-08741847 --branch main --src index.ts"
   }
 }

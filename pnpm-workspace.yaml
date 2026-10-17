@@ -1,4 +1,12 @@
+# The desktop app is the root package. The Neon storage Function (deployed separately) is a workspace member,
+# so one `pnpm install` and one lockfile cover both.
+packages:
+  - neon/storage-fn
+
+# pnpm 11 blocks dependency install scripts unless allowed here.
 allowBuilds:
-  electron-winstaller: true
+  electron: true            # fetches the Electron binary
+  electron-winstaller: true # Windows installer tooling used by electron-builder
+
 minimumReleaseAgeExclude:
   - electron@44.9.0

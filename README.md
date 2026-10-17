@@ -49,13 +49,13 @@ Only needed to move to a different project. Run these against the new project's 
 1. Enable the Data API with Neon Auth (Console > Data API > Enable), on database `neondb`.
 2. Run `neon/setup.sql` in the SQL Editor.
 3. Create a private Object Storage bucket named `profiles`.
-4. Deploy the storage function: `cd neon/storage-fn && npm install && neon functions deploy shardxstorage --src index.ts`.
+4. Deploy the storage function: `pnpm install && pnpm deploy:storage` (edit the project id in `neon/storage-fn/package.json` first).
 5. Auth settings: disable sign-up, remove OAuth providers you don't use, and add `https://shardx-sync.app` as a trusted domain.
 6. Put the new database URL and function URL in `src/core/defaults.js` (or in the app's Settings > Neon connection).
 
 ## Using the app
 
-1. Install from `dist/` (or build, see below). On first run enter the team passphrase and a name for this computer.
+1. Download the installer for your OS from the repo's GitHub Releases page (or build it, see below). On first run enter the team passphrase and a name for this computer.
 2. Sign in. The first time, use **Set or reset password** to set your password with an emailed code.
 3. Pick a profile on the left. The right side shows its status, the last sync, who has it checked out, and the buttons.
 
@@ -85,17 +85,48 @@ If logins do not carry over, sites will simply ask you to sign in again. Nothing
 
 ## Development
 
+The repo is a small pnpm workspace with two packages:
+
+| Package | What it is |
+| --- | --- |
+| root `package.json` | The Electron desktop app |
+| `neon/storage-fn` | The Neon Function that issues storage links. Deployed to Neon on its own, never bundled into the app. |
+
 ```bash
-npm install
-npm start          # run the app
-npm test           # end-to-end sync tests against an in-memory cloud
+pnpm install         # installs both packages
+pnpm start           # run the app
+pnpm test            # end-to-end sync tests against an in-memory cloud
+pnpm dist:mac        # or dist:win / dist:linux -> installers in dist/
+pnpm deploy:storage  # redeploy the Neon storage function
 # live test against the real Neon project (needs two team accounts; cleans up after itself)
 LIVE_A_EMAIL=.. LIVE_A_PASS=.. LIVE_B_EMAIL=.. LIVE_B_PASS=.. node test/live-neon.js
-npm run dist:mac   # or dist:win / dist:linux -> installers in dist/
 ```
 
-From VS Code's terminal, run `env -u ELECTRON_RUN_AS_NODE npm start`.
-The GitHub workflow in `.github/workflows/build.yml` builds all three installers on each `v*` tag.
+From VS Code's terminal, run `env -u ELECTRON_RUN_AS_NODE pnpm start`.
+Building the Linux `.deb` on a Mac needs `brew install gnu-tar xz`. GitHub Actions builds it without that.
+
+## Releasing
+
+Pushing a version tag builds every installer on GitHub Actions and attaches them to a GitHub Release.
+
+```bash
+pnpm version 1.1.0        # bumps package.json, commits, and creates tag v1.1.0
+git push --follow-tags    # pushes the commit and the tag; the workflow does the rest
+```
+
+The release contains:
+
+| File | For |
+| --- | --- |
+| `ShardX-Sync-<version>-mac-arm64.dmg` | Apple Silicon Macs |
+| `ShardX-Sync-<version>-mac-x64.dmg` | Intel Macs |
+| `ShardX-Sync-<version>-win-x64-setup.exe` | Windows |
+| `ShardX-Sync-<version>-linux-x86_64.AppImage` | Any Linux |
+| `ShardX-Sync-<version>-linux-amd64.deb` | Debian and Ubuntu |
+
+The workflow fails if the tag does not match the `package.json` version.
+To build without releasing, run the workflow by hand from the Actions tab and download the files from the run.
+
 Installers are unsigned. On macOS, right-click the app and choose Open the first time.
 On Windows, choose "More info > Run anyway" in SmartScreen.
 
