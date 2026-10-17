@@ -1,7 +1,7 @@
 {
   "name": "shardx-sync",
   "productName": "ShardX Sync",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Share ShardX browser profiles between computers through Neon",
   "main": "src/main.js",
   "author": {
