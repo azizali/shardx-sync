@@ -31,7 +31,7 @@ function log(msg, cls = '') { const d = document.createElement('div'); d.classNa
 async function boot() {
   const r = await api.state(); S.state = r.data;
   if (!S.state.configured) return openSettings(false);
-  if (!S.state.user) return show('login');
+  if (!S.state.user) return showLogin(false);
   show('main');
   $('#who-email').textContent = S.state.user.email;
   $('#who-machine').textContent = S.state.config.machine;
@@ -41,7 +41,7 @@ async function boot() {
 // ---------- settings ----------
 function openSettings(cancelable = true) {
   const c = S.state.config; const f = $('#setup-form');
-  f.supabaseUrl.value = c.supabaseUrl || ''; f.supabaseAnonKey.value = c.supabaseAnonKey || '';
+  f.neonUrl.value = c.neonUrl || ''; f.storageUrl.value = c.storageUrl || '';
   f.machine.value = c.machine || ''; f.shardxRoot.value = c.shardxRoot || ''; f.skipCaches.checked = c.skipCaches !== false;
   f.passphrase.value = '';
   $('#pass-hint').textContent = c.hasPassphrase ? '(saved. Leave empty to keep it)' : '';
@@ -54,7 +54,7 @@ function openSettings(cancelable = true) {
 $('#setup-form').addEventListener('submit', async (e) => {
   e.preventDefault(); const f = e.target;
   const r = await api.saveSettings({
-    supabaseUrl: f.supabaseUrl.value, supabaseAnonKey: f.supabaseAnonKey.value, passphrase: f.passphrase.value,
+    neonUrl: f.neonUrl.value, storageUrl: f.storageUrl.value, passphrase: f.passphrase.value,
     machine: f.machine.value, shardxRoot: f.shardxRoot.value, skipCaches: f.skipCaches.checked,
   });
   if (!r.ok) { $('#setup-err').textContent = r.error.message; return; }
@@ -71,6 +71,26 @@ $('#login-form').addEventListener('submit', async (e) => {
   const r = await api.signIn(f.email.value.trim(), f.password.value);
   if (!r.ok) { $('#login-err').textContent = r.error.message; return; }
   f.password.value = ''; boot();
+});
+function showLogin(reset) { show('login'); $('#login-form').hidden = !!reset; $('#reset-form').hidden = !reset; }
+$('#login-reset').onclick = () => { $('#reset-form').email.value = $('#login-form').email.value; $('#reset-err').textContent = ''; $('#reset-info').textContent = ''; showLogin(true); };
+$('#reset-back').onclick = () => showLogin(false);
+$('#reset-send').onclick = async () => {
+  const f = $('#reset-form'); $('#reset-err').textContent = ''; $('#reset-info').textContent = '';
+  if (!f.email.value.trim()) { $('#reset-err').textContent = 'Enter your email first.'; return; }
+  const r = await api.sendCode(f.email.value.trim());
+  if (!r.ok) { $('#reset-err').textContent = r.error.message; return; }
+  $('#reset-info').textContent = 'If this email has a team account, a code is on its way. It expires in a few minutes.';
+};
+$('#reset-form').addEventListener('submit', async (e) => {
+  e.preventDefault(); const f = e.target; $('#reset-err').textContent = '';
+  const email = f.email.value.trim();
+  let r = await api.resetPassword(email, f.otp.value.trim(), f.password.value);
+  if (!r.ok) { $('#reset-err').textContent = r.error.message; return; }
+  r = await api.signIn(email, f.password.value);
+  f.password.value = ''; f.otp.value = '';
+  if (!r.ok) { $('#reset-err').textContent = r.error.message; return; }
+  boot();
 });
 $('#btn-signout').onclick = async () => { await api.signOut(); S.items = []; S.selected = null; boot(); };
 

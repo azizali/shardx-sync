@@ -11,9 +11,7 @@
 <section id="view-setup" class="view center" hidden>
   <form id="setup-form" class="card form">
     <h1>Settings</h1>
-    <p class="muted">Both teammates enter the same Supabase project and the same team passphrase.</p>
-    <label>Supabase project URL<input name="supabaseUrl" placeholder="https://abcd1234.supabase.co" required></label>
-    <label>Supabase anon (publishable) key<input name="supabaseAnonKey" placeholder="eyJhbGciOi... or sb_publishable_..." required></label>
+    <p class="muted">Both teammates use the same team passphrase. The Neon URLs are pre-filled for your team.</p>
     <label>Team passphrase <span class="hint" id="pass-hint"></span>
       <input name="passphrase" type="password" autocomplete="new-password" placeholder="Shared secret that encrypts all profile data"></label>
     <label>This computer's name<input name="machine" placeholder="e.g. Aziz MacBook"></label>
@@ -21,6 +19,10 @@
       <div class="row"><input name="shardxRoot" placeholder="Auto-detected"><button type="button" id="pick-folder" class="btn">Browse…</button></div>
       <span class="hint" id="root-hint"></span></label>
     <label class="check"><input type="checkbox" name="skipCaches" checked> Skip browser caches (faster, recommended)</label>
+    <details class="adv"><summary>Neon connection</summary>
+      <label>Neon database URL<input name="neonUrl" placeholder="https://ep-xxx.c-6.us-east-2.aws.neon.tech/neondb"></label>
+      <label>Storage function URL<input name="storageUrl" placeholder="https://br-xxx-shardxstorage.compute....neon.tech"></label>
+    </details>
     <div class="row end">
       <button type="button" id="setup-cancel" class="btn ghost">Cancel</button>
       <button class="btn primary">Save</button>
@@ -39,7 +41,21 @@
     <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
     <button class="btn primary wide">Sign in</button>
     <p class="err" id="login-err"></p>
-    <button type="button" class="link" id="login-settings">Settings</button>
+    <div class="row" style="justify-content:center;gap:16px">
+      <button type="button" class="link" id="login-reset">Set or reset password</button>
+      <button type="button" class="link" id="login-settings">Settings</button>
+    </div>
+  </form>
+  <form id="reset-form" class="card form narrow" hidden>
+    <h1>Set your password</h1>
+    <p class="muted">New team accounts start without a password. Enter your email, then the 6-digit code we send you.</p>
+    <label>Email<input name="email" type="email" autocomplete="username" required></label>
+    <button type="button" class="btn" id="reset-send">Email me a code</button>
+    <label>Code<input name="otp" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code"></label>
+    <label>New password<input name="password" type="password" autocomplete="new-password" minlength="8"></label>
+    <button class="btn primary wide">Save password and sign in</button>
+    <p class="err" id="reset-err"></p><p class="muted" id="reset-info"></p>
+    <button type="button" class="link" id="reset-back">Back to sign in</button>
   </form>
 </section>
 

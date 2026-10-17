@@ -6,6 +6,7 @@ const path = require('path');
 const { Cloud, SyncError } = require('./core/cloud');
 const { SyncEngine, verifyTeamKey } = require('./core/sync');
 const { deriveKey } = require('./core/crypto');
+const DEFAULTS = require('./core/defaults');
 const { resolveShardxRoot, isValidShardxRoot } = require('./core/paths');
 const { isLauncherRunning } = require('./core/profiles');
 
@@ -15,7 +16,10 @@ const SECRET_FILE = path.join(WORK, 'secrets.bin');
 
 // ---------- local config & secrets (secrets encrypted with the OS keychain/DPAPI/libsecret) ----------
 const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return d; } };
-const loadConfig = () => ({ supabaseUrl: '', supabaseAnonKey: '', shardxRoot: '', machine: os.hostname(), skipCaches: true, ...readJson(CONFIG_FILE, {}) });
+const loadConfig = () => {
+  const c = { neonUrl: '', storageUrl: '', shardxRoot: '', machine: os.hostname(), skipCaches: true, ...readJson(CONFIG_FILE, {}) };
+  return { ...c, neonUrl: c.neonUrl || DEFAULTS.neonUrl, storageUrl: c.storageUrl || DEFAULTS.storageUrl, authOrigin: c.authOrigin || DEFAULTS.authOrigin };
+};
 const saveConfig = (c) => { fs.mkdirSync(WORK, { recursive: true }); fs.writeFileSync(CONFIG_FILE, JSON.stringify(c, null, 2)); };
 
 function loadSecrets() {
@@ -29,7 +33,7 @@ function saveSecrets(s) {
   const text = JSON.stringify(s);
   fs.writeFileSync(SECRET_FILE, safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(text) : text, { mode: 0o600 });
 }
-// Keeps the Supabase login across restarts.
+// Keeps the Neon Auth session across restarts.
 const sessionStore = {
   getItem: (k) => loadSecrets().session?.[k] ?? null,
   setItem: (k, v) => { const s = loadSecrets(); s.session = { ...(s.session || {}), [k]: v }; saveSecrets(s); },
@@ -41,21 +45,21 @@ let win; let cloud = null; let engine = null; let busy = false;
 
 function buildCloud() {
   const c = loadConfig();
-  cloud = c.supabaseUrl && c.supabaseAnonKey ? new Cloud(c.supabaseUrl, c.supabaseAnonKey, sessionStore) : null;
+  try { cloud = c.neonUrl && c.storageUrl ? new Cloud(c, sessionStore) : null; } catch { cloud = null; }
   engine = null;
 }
 
 async function getEngine() {
   if (engine) return engine;
   const c = loadConfig();
-  if (!cloud) throw new SyncError('SETUP', 'Open Settings and enter your Supabase details.');
+  if (!cloud) throw new SyncError('SETUP', 'Open Settings and check the Neon URLs.');
   const user = await cloud.currentUser();
   if (!user) throw new SyncError('AUTH', 'Please sign in.');
   const pass = loadSecrets().passphrase;
   if (!pass) throw new SyncError('SETUP', 'Open Settings and enter the team passphrase.');
   const root = resolveShardxRoot(c.shardxRoot);
   if (!isValidShardxRoot(root)) throw new SyncError('SETUP', `ShardX data folder not found at ${root}. Set it in Settings.`);
-  const key = deriveKey(pass, c.supabaseUrl);
+  const key = deriveKey(pass, c.neonUrl);
   await verifyTeamKey(cloud, key);
   engine = new SyncEngine({
     cloud, key, root, workDir: WORK, machine: c.machine || os.hostname(), user, skipCaches: c.skipCaches !== false,
@@ -81,7 +85,7 @@ handle('app:state', async () => {
   const user = cloud ? await cloud.currentUser().catch(() => null) : null;
   const root = resolveShardxRoot(c.shardxRoot);
   return {
-    configured: !!(c.supabaseUrl && c.supabaseAnonKey && loadSecrets().passphrase),
+    configured: !!(c.neonUrl && c.storageUrl && loadSecrets().passphrase),
     user: user ? { id: user.id, email: user.email } : null,
     config: { ...c, shardxRootResolved: root, shardxRootValid: isValidShardxRoot(root), hasPassphrase: !!loadSecrets().passphrase },
     platform: process.platform, version: app.getVersion(),
@@ -91,14 +95,18 @@ handle('app:state', async () => {
 handle('settings:save', async (s) => {
   const c = loadConfig();
   const next = {
-    ...c,
-    supabaseUrl: String(s.supabaseUrl || '').trim().replace(/\/+$/, ''),
-    supabaseAnonKey: String(s.supabaseAnonKey || '').trim(),
+    ...readJson(CONFIG_FILE, {}),
+    neonUrl: String(s.neonUrl || '').trim().replace(/\/+$/, ''),
+    storageUrl: String(s.storageUrl || '').trim().replace(/\/+$/, ''),
     shardxRoot: String(s.shardxRoot || '').trim(),
     machine: String(s.machine || '').trim() || os.hostname(),
     skipCaches: s.skipCaches !== false,
   };
-  const changedProject = next.supabaseUrl !== c.supabaseUrl || next.supabaseAnonKey !== c.supabaseAnonKey;
+  for (const k of ['neonUrl', 'storageUrl']) {
+    if (next[k] && !/^https:\/\/[^/]+/.test(next[k])) throw new SyncError('SETUP', `${k} must be an https URL.`);
+    if (next[k] === DEFAULTS[k]) next[k] = ''; // keep following the built-in default
+  }
+  const changedProject = (next.neonUrl || DEFAULTS.neonUrl) !== c.neonUrl;
   saveConfig(next);
   if (s.passphrase) { const sec = loadSecrets(); sec.passphrase = String(s.passphrase); saveSecrets(sec); }
   if (changedProject) { const sec = loadSecrets(); delete sec.session; saveSecrets(sec); }
@@ -112,10 +120,18 @@ handle('settings:pickFolder', async () => {
 });
 
 handle('auth:signIn', async (email, password) => {
-  if (!cloud) throw new SyncError('SETUP', 'Enter Supabase details in Settings first.');
+  if (!cloud) throw new SyncError('SETUP', 'Check the Neon URLs in Settings first.');
   const u = await cloud.signIn(email, password);
   engine = null;
   return { id: u.id, email: u.email };
+});
+handle('auth:sendCode', async (email) => {
+  if (!cloud) throw new SyncError('SETUP', 'Check the Neon URLs in Settings first.');
+  await cloud.sendPasswordCode(email); return true;
+});
+handle('auth:resetPassword', async (email, otp, password) => {
+  if (!cloud) throw new SyncError('SETUP', 'Check the Neon URLs in Settings first.');
+  await cloud.resetPassword(email, otp, password); return true;
 });
 handle('auth:signOut', async () => { await cloud?.signOut(); engine = null; return true; });
 

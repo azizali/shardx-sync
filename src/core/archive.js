@@ -7,7 +7,7 @@ const crypto = require('crypto');
 const tar = require('tar');
 const { encrypt, decrypt } = require('./crypto');
 
-// Supabase free plan caps each uploaded file at 50 MB. Stay well under it.
+// Parts are uploaded one presigned PUT each; 40 MB keeps retries cheap on slow links.
 const PART_SIZE = 40 * 1024 * 1024;
 
 async function packToFile(root, files, outFile) {

@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('api', {
   pickFolder: call('settings:pickFolder'),
   signIn: call('auth:signIn'),
   signOut: call('auth:signOut'),
+  sendCode: call('auth:sendCode'),
+  resetPassword: call('auth:resetPassword'),
   list: call('profiles:list'),
   push: call('profiles:push'),
   pull: call('profiles:pull'),

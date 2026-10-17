@@ -54,3 +54,7 @@ input:focus { outline: 2px solid var(--accent2); outline-offset: -1px; }
 .log { padding: 6px 16px; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
 .log .ok { color: var(--green); } .log .bad { color: var(--red); }
 .warn { color: var(--amber); font-size: 13px; margin: 0 0 12px; }
+details.adv { border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 12px; }
+details.adv summary { color: var(--muted); cursor: pointer; font-size: 13px; margin-bottom: 8px; }
+details.adv[open] summary { margin-bottom: 12px; }
+#view-login { display: grid; place-items: center; }

@@ -1,5 +1,5 @@
 'use strict';
-// AES-256-GCM with a key derived from the team passphrase. Supabase only ever sees ciphertext.
+// AES-256-GCM with a key derived from the team passphrase. The cloud only ever sees ciphertext.
 const crypto = require('crypto');
 
 const MAGIC = Buffer.from('SXS1');

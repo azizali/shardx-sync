@@ -1,6 +1,6 @@
--- ShardX Sync: run this once in Supabase > SQL Editor > New query.
--- Everyone who can log in to this Supabase project is treated as one team.
--- Turn OFF public sign-ups (Authentication > Sign In / Providers) and invite teammates by email.
+-- ShardX Sync schema for Neon (Data API + Managed Better Auth).
+-- Run once on the branch's neondb database (Neon Console > SQL Editor, or `neon psql -f`).
+-- Everyone who can sign in is one team. Sign-ups are disabled; accounts are created by an admin.
 
 create table if not exists public.synced_profiles (
   id              uuid primary key,          -- ShardX profile id
@@ -108,19 +108,12 @@ begin
 end $$;
 
 revoke all on function public.claim_lock(uuid, text, boolean), public.release_lock(uuid, text, boolean),
-  public.commit_version(uuid, integer, text, text, integer, bigint, text, text, text, text, boolean) from public, anon;
+  public.commit_version(uuid, integer, text, text, integer, bigint, text, text, text, text, boolean) from public, anonymous;
 grant execute on function public.claim_lock(uuid, text, boolean), public.release_lock(uuid, text, boolean),
   public.commit_version(uuid, integer, text, text, integer, bigint, text, text, text, text, boolean) to authenticated;
 
--- Private storage bucket for the encrypted profile archives.
-insert into storage.buckets (id, name, public) values ('profiles', 'profiles', false)
-  on conflict (id) do nothing;
-
-drop policy if exists "team read profile files" on storage.objects;
-create policy "team read profile files" on storage.objects for select to authenticated using (bucket_id = 'profiles');
-drop policy if exists "team write profile files" on storage.objects;
-create policy "team write profile files" on storage.objects for insert to authenticated with check (bucket_id = 'profiles');
-drop policy if exists "team update profile files" on storage.objects;
-create policy "team update profile files" on storage.objects for update to authenticated using (bucket_id = 'profiles');
-drop policy if exists "team delete profile files" on storage.objects;
-create policy "team delete profile files" on storage.objects for delete to authenticated using (bucket_id = 'profiles');
+-- Data API access: signed-in users only. Anonymous gets nothing.
+grant usage on schema public to authenticated;
+grant select, delete on public.synced_profiles to authenticated;
+grant select, insert on public.team_settings to authenticated;
+revoke all on public.synced_profiles, public.team_settings from anonymous;
