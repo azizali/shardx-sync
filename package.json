@@ -1,0 +1,56 @@
+{
+  "name": "shardx-sync",
+  "productName": "ShardX Sync",
+  "version": "1.0.0",
+  "description": "Share ShardX browser profiles between computers through Supabase",
+  "main": "src/main.js",
+  "author": {
+    "name": "Aziz Ali",
+    "email": "aziz.ali88@gmail.com"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.shardxsync.app",
+    "productName": "ShardX Sync",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.utilities"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility",
+      "maintainer": "Aziz Ali <aziz.ali88@gmail.com>"
+    }
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.118.0",
+    "tar": "^7.5.22"
+  },
+  "devDependencies": {
+    "electron": "^44.9.0",
+    "electron-builder": "^26.15.3"
+  }
+}

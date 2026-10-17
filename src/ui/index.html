@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<title>ShardX Sync</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<!-- Setup -->
+<section id="view-setup" class="view center" hidden>
+  <form id="setup-form" class="card form">
+    <h1>Settings</h1>
+    <p class="muted">Both teammates enter the same Supabase project and the same team passphrase.</p>
+    <label>Supabase project URL<input name="supabaseUrl" placeholder="https://abcd1234.supabase.co" required></label>
+    <label>Supabase anon (publishable) key<input name="supabaseAnonKey" placeholder="eyJhbGciOi... or sb_publishable_..." required></label>
+    <label>Team passphrase <span class="hint" id="pass-hint"></span>
+      <input name="passphrase" type="password" autocomplete="new-password" placeholder="Shared secret that encrypts all profile data"></label>
+    <label>This computer's name<input name="machine" placeholder="e.g. Aziz MacBook"></label>
+    <label>ShardX data folder
+      <div class="row"><input name="shardxRoot" placeholder="Auto-detected"><button type="button" id="pick-folder" class="btn">Browse…</button></div>
+      <span class="hint" id="root-hint"></span></label>
+    <label class="check"><input type="checkbox" name="skipCaches" checked> Skip browser caches (faster, recommended)</label>
+    <div class="row end">
+      <button type="button" id="setup-cancel" class="btn ghost">Cancel</button>
+      <button class="btn primary">Save</button>
+    </div>
+    <p class="err" id="setup-err"></p>
+  </form>
+</section>
+
+<!-- Login -->
+<section id="view-login" class="view center" hidden>
+  <form id="login-form" class="card form narrow">
+    <div class="logo">⇅</div>
+    <h1>ShardX Sync</h1>
+    <p class="muted">Sign in with your team account.</p>
+    <label>Email<input name="email" type="email" autocomplete="username" required></label>
+    <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="btn primary wide">Sign in</button>
+    <p class="err" id="login-err"></p>
+    <button type="button" class="link" id="login-settings">Settings</button>
+  </form>
+</section>
+
+<!-- Main -->
+<section id="view-main" class="view" hidden>
+  <header class="topbar">
+    <div class="brand"><span class="logo sm">⇅</span> ShardX Sync</div>
+    <div class="who"><span id="who-machine"></span> · <span id="who-email"></span></div>
+    <div class="actions">
+      <button class="btn" id="btn-refresh" title="Refresh">Refresh</button>
+      <button class="btn" id="btn-settings">Settings</button>
+      <button class="btn ghost" id="btn-signout">Sign out</button>
+    </div>
+  </header>
+  <div class="banner" id="banner-launcher" hidden>ShardX Launcher is open. Quit it before downloading so it picks up the new profile when reopened.</div>
+  <div class="layout">
+    <aside class="list-pane">
+      <input id="search" class="search" placeholder="Search profiles">
+      <div id="list" class="list"></div>
+      <div class="list-foot muted" id="list-foot"></div>
+    </aside>
+    <main class="detail-pane" id="detail"><div class="empty muted">Select a profile</div></main>
+  </div>
+  <footer class="logbar"><div id="log" class="log"></div></footer>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>
