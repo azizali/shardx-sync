@@ -1,11 +1,14 @@
 name: Build and release
 
-# Push a tag like v1.2.0 to build all installers and publish them as a GitHub Release.
-# Run it manually (Actions > Build and release > Run workflow) to build without releasing.
+# Push a tag like v1.2.0 to build every installer and publish them as a GitHub Release.
+# Run it by hand (Actions > Build and release > Run workflow) to build without releasing.
 on:
   workflow_dispatch:
   push:
     tags: ['v*']
+
+env:
+  WAILS_VERSION: v2.16.0
 
 jobs:
   build:
@@ -14,50 +17,72 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            target: --mac
           - os: windows-latest
-            target: --win
-          - os: ubuntu-latest
-            target: --linux
+          - os: ubuntu-24.04
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4 # uses the version pinned in package.json "packageManager"
-
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-go@v5
         with:
-          node-version: 22
-          cache: pnpm
+          go-version-file: go.mod
 
-      - run: pnpm install --frozen-lockfile
-
-      - name: Check tag matches package.json version
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
+      - name: Version
+        id: v
         run: |
-          pkg="v$(node -p "require('./package.json').version")"
-          if [ "$pkg" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $pkg. Use 'pnpm version <x.y.z>' to bump both."
-            exit 1
-          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF_NAME#v}"; else V="$(jq -r .info.productVersion wails.json)"; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          # The app bundle/installer metadata reads the version from wails.json.
+          jq --arg v "$V" '.info.productVersion = $v' wails.json > wails.tmp && mv wails.tmp wails.json
 
-      - run: pnpm test
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
 
-      - name: Build installers
-        run: pnpm exec electron-builder ${{ matrix.target }} --publish never
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false' # unsigned builds
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
+
+      - run: go test ./...
+
+      - name: Build macOS (universal)
+        if: runner.os == 'macOS'
+        run: |
+          V=${{ steps.v.outputs.version }}
+          wails build -platform darwin/universal -clean -ldflags "-X main.version=$V"
+          mkdir -p dist dmg && cp -R "build/bin/ShardX Sync.app" dmg/ && ln -s /Applications dmg/Applications
+          hdiutil create -volname "ShardX Sync" -srcfolder dmg -ov -format UDZO "dist/ShardX-Sync-$V-mac-universal.dmg"
+
+      - name: Build Windows
+        if: runner.os == 'Windows'
+        run: |
+          V=${{ steps.v.outputs.version }}
+          command -v makensis || choco install nsis -y --no-progress
+          export PATH="$PATH:/c/Program Files (x86)/NSIS"
+          wails build -platform windows/amd64 -nsis -clean -ldflags "-X main.version=$V"
+          mkdir -p dist
+          cp build/bin/shardx-sync.exe "dist/ShardX-Sync-$V-win-x64-portable.exe"
+          cp build/bin/*installer.exe "dist/ShardX-Sync-$V-win-x64-setup.exe"
+
+      - name: Build Linux
+        if: runner.os == 'Linux'
+        run: |
+          V=${{ steps.v.outputs.version }}
+          wails build -platform linux/amd64 -tags webkit2_41 -clean -ldflags "-X main.version=$V"
+          mkdir -p dist
+          tar -czf "dist/ShardX-Sync-$V-linux-x64.tar.gz" -C build/bin shardx-sync
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          VERSION=$V nfpm package -p deb -f build/linux/nfpm.yaml -t dist/
+          mv dist/shardx-sync_*_amd64.deb "dist/ShardX-Sync-$V-linux-amd64.deb"
+
+      - run: ls -la dist
 
       - uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.os }}
+          path: dist/*
           if-no-files-found: error
-          path: |
-            dist/*.dmg
-            dist/*.exe
-            dist/*.AppImage
-            dist/*.deb
 
   release:
     needs: build

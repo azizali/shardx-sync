@@ -1,6 +1,7 @@
 # ShardX Sync
 
 Desktop app (macOS, Windows, Linux) that shares ShardX browser profiles between teammates through Neon.
+Built with Go and Wails, so each installer is small: it uses the webview that is already part of the OS.
 
 A synced profile includes the fingerprint file, the full browser folder (cookies, saved logins, local storage,
 IndexedDB, bookmarks, history, sessions, Web Store extensions), the ShardX extensions it uses and its proxy.
@@ -19,7 +20,7 @@ Neon only stores ciphertext.
 | Neon Function `shardxstorage` | Checks the user's login token, then returns 15-minute presigned upload and download links (`neon/storage-fn`). The app never holds storage keys. |
 
 The project is `shardx-sync` (`frosty-water-08741847`), branch `main`. Its public URLs are built into
-`src/core/defaults.js`, so teammates only need a login and the team passphrase.
+`internal/core/defaults.go`, so teammates only need a login and the team passphrase.
 
 ## Adding a teammate
 
@@ -51,7 +52,7 @@ Only needed to move to a different project. Run these against the new project's 
 3. Create a private Object Storage bucket named `profiles`.
 4. Deploy the storage function: `pnpm install && pnpm deploy:storage` (edit the project id in `neon/storage-fn/package.json` first).
 5. Auth settings: disable sign-up, remove OAuth providers you don't use, and add `https://shardx-sync.app` as a trusted domain.
-6. Put the new database URL and function URL in `src/core/defaults.js` (or in the app's Settings > Neon connection).
+6. Put the new database URL and function URL in `internal/core/defaults.go` (or in the app's Settings > Neon connection).
 
 ## Using the app
 
@@ -85,50 +86,53 @@ If logins do not carry over, sites will simply ask you to sign in again. Nothing
 
 ## Development
 
-The repo is a small pnpm workspace with two packages:
-
-| Package | What it is |
+| Path | What it is |
 | --- | --- |
-| root `package.json` | The Electron desktop app |
-| `neon/storage-fn` | The Neon Function that issues storage links. Deployed to Neon on its own, never bundled into the app. |
+| `main.go`, `app.go`, `secrets.go` | Wails app: window, methods the UI calls, OS keychain storage |
+| `internal/core` | Sync engine: profile scanning, archive, encryption, Neon client, locks and conflicts |
+| `frontend/dist` | The UI (plain HTML, CSS and JS, no build step) |
+| `build/` | Icons, macOS Info.plist, Windows installer script, Linux `.deb` config |
+| `neon/` | Database schema and the Neon storage Function (TypeScript, managed with pnpm) |
+
+Requirements: Go 1.26+ and the Wails CLI (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0`).
+On Linux also `libgtk-3-dev` and `libwebkit2gtk-4.1-dev`.
 
 ```bash
-pnpm install         # installs both packages
-pnpm start           # run the app
-pnpm test            # end-to-end sync tests against an in-memory cloud
-pnpm dist:mac        # or dist:win / dist:linux -> installers in dist/
-pnpm deploy:storage  # redeploy the Neon storage function
+wails dev                                   # run the app with live reload
+go test ./...                               # sync engine tests against an in-memory cloud
+wails build -platform darwin/universal      # macOS app in build/bin
+wails build -platform windows/amd64 -nsis   # Windows exe + installer (needs makensis)
+wails build -platform linux/amd64 -tags webkit2_41   # on Linux only
+pnpm install && pnpm deploy:storage         # redeploy the Neon storage function
 # live test against the real Neon project (needs two team accounts; cleans up after itself)
-LIVE_A_EMAIL=.. LIVE_A_PASS=.. LIVE_B_EMAIL=.. LIVE_B_PASS=.. node test/live-neon.js
+LIVE_A_EMAIL=.. LIVE_A_PASS=.. LIVE_B_EMAIL=.. LIVE_B_PASS=.. go test -tags live -run TestLive -v ./internal/core
 ```
-
-From VS Code's terminal, run `env -u ELECTRON_RUN_AS_NODE pnpm start`.
-Building the Linux `.deb` on a Mac needs `brew install gnu-tar xz`. GitHub Actions builds it without that.
 
 ## Releasing
 
 Pushing a version tag builds every installer on GitHub Actions and attaches them to a GitHub Release.
+The version comes from the tag, so there is no file to bump.
 
 ```bash
-pnpm version 1.1.0        # bumps package.json, commits, and creates tag v1.1.0
-git push --follow-tags    # pushes the commit and the tag; the workflow does the rest
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
 The release contains:
 
 | File | For |
 | --- | --- |
-| `ShardX-Sync-<version>-mac-arm64.dmg` | Apple Silicon Macs |
-| `ShardX-Sync-<version>-mac-x64.dmg` | Intel Macs |
-| `ShardX-Sync-<version>-win-x64-setup.exe` | Windows |
-| `ShardX-Sync-<version>-linux-x86_64.AppImage` | Any Linux |
-| `ShardX-Sync-<version>-linux-amd64.deb` | Debian and Ubuntu |
+| `ShardX-Sync-<version>-mac-universal.dmg` | Any Mac (Apple Silicon and Intel), macOS 12 or later |
+| `ShardX-Sync-<version>-win-x64-setup.exe` | Windows installer |
+| `ShardX-Sync-<version>-win-x64-portable.exe` | Windows, no install needed |
+| `ShardX-Sync-<version>-linux-amd64.deb` | Ubuntu 24.04+ and Debian 13+ |
+| `ShardX-Sync-<version>-linux-x64.tar.gz` | Other Linux; needs GTK 3 and WebKitGTK 4.1 installed |
 
-The workflow fails if the tag does not match the `package.json` version.
 To build without releasing, run the workflow by hand from the Actions tab and download the files from the run.
 
 Installers are unsigned. On macOS, right-click the app and choose Open the first time.
 On Windows, choose "More info > Run anyway" in SmartScreen.
+Windows needs the WebView2 runtime, which Windows 10 and 11 normally include. The setup installer fetches it if missing.
 
 ## Where things live
 
@@ -137,4 +141,6 @@ On Windows, choose "More info > Run anyway" in SmartScreen.
 | ShardX data (auto-detected) | `~/Library/Application Support/shardx-launcher` | `%APPDATA%\shardx-launcher` | `~/.config/shardx-launcher` |
 | ShardX Sync settings and backups | `~/Library/Application Support/ShardX Sync` | `%APPDATA%\ShardX Sync` | `~/.config/ShardX Sync` |
 
-The passphrase and login are stored encrypted with the OS keychain (Electron safeStorage).
+The passphrase and login session are stored in the OS keychain: macOS Keychain, Windows Credential Manager,
+or the Linux Secret Service. On a Linux desktop without a keyring they fall back to a private file
+(`secrets.json`, readable only by you) in the settings folder.

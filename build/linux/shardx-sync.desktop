@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=ShardX Sync
+Comment=Share ShardX browser profiles with your team
+Exec=shardx-sync
+Icon=shardx-sync
+Terminal=false
+Categories=Utility;Network;

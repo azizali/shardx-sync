@@ -1,0 +1,24 @@
+# Debian package for the Linux build. Used by the release workflow:
+#   VERSION=1.2.0 nfpm package -p deb -f build/linux/nfpm.yaml -t dist/
+name: shardx-sync
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: Aziz Ali
+description: Share ShardX browser profiles with your team.
+homepage: https://github.com/azizali/shardx-sync
+license: Proprietary
+depends:
+  - libgtk-3-0t64 | libgtk-3-0
+  - libwebkit2gtk-4.1-0
+contents:
+  - src: build/bin/shardx-sync
+    dst: /usr/bin/shardx-sync
+    file_info:
+      mode: 0755
+  - src: build/linux/shardx-sync.desktop
+    dst: /usr/share/applications/shardx-sync.desktop
+  - src: build/appicon.png
+    dst: /usr/share/pixmaps/shardx-sync.png

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "ShardX Sync",
+  "outputfilename": "shardx-sync",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dir": "frontend",
+  "author": {
+    "name": "Aziz Ali"
+  },
+  "info": {
+    "companyName": "ShardX Sync",
+    "productName": "ShardX Sync",
+    "productVersion": "1.1.0",
+    "copyright": "Copyright Aziz Ali",
+    "comments": "Share ShardX browser profiles with your team"
+  }
+}

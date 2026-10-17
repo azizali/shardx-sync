@@ -1,82 +1,10 @@
 {
   "name": "shardx-sync",
-  "productName": "ShardX Sync",
-  "version": "1.1.0",
-  "description": "Share ShardX browser profiles between computers through Neon",
-  "main": "src/main.js",
-  "author": {
-    "name": "Aziz Ali",
-    "email": "support@ilovecoding.org"
-  },
-  "license": "UNLICENSED",
   "private": true,
+  "license": "UNLICENSED",
+  "description": "pnpm workspace root. The desktop app is Go + Wails (see README); pnpm only manages the Neon storage function.",
   "scripts": {
-    "start": "electron .",
-    "test": "node --test test/*.test.js",
-    "dist": "electron-builder --publish never",
-    "dist:mac": "electron-builder --mac --publish never",
-    "dist:win": "electron-builder --win --publish never",
-    "dist:linux": "electron-builder --linux --publish never",
     "deploy:storage": "pnpm --filter @shardx-sync/storage-fn run deploy"
-  },
-  "build": {
-    "appId": "com.shardxsync.app",
-    "productName": "ShardX Sync",
-    "files": [
-      "src/**/*",
-      "package.json"
-    ],
-    "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        }
-      ],
-      "category": "public.app-category.utilities"
-    },
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
-    },
-    "linux": {
-      "target": [
-        {
-          "target": "AppImage",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "deb",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "category": "Utility",
-      "maintainer": "Aziz Ali <aziz.ali88@gmail.com>"
-    },
-    "artifactName": "ShardX-Sync-${version}-${os}-${arch}.${ext}",
-    "nsis": {
-      "artifactName": "ShardX-Sync-${version}-win-${arch}-setup.${ext}"
-    }
-  },
-  "dependencies": {
-    "tar": "^7.5.22"
-  },
-  "devDependencies": {
-    "electron": "^44.9.0",
-    "electron-builder": "^26.15.3"
   },
   "packageManager": "pnpm@11.20.0+sha512.9a6f330a95b66446ea088faf1521405a8a01f07fde7124cc9958dfed52d4bb436737e65b08f85f37b46fcba375092558ac51262b816844b22f63406ed166bfee"
 }

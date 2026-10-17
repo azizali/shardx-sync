@@ -215,5 +215,7 @@ async function doPull(i, opts) {
   }
 }
 
-api.onProgress((p) => { S.progress = p; if (p.id === S.selected) renderDetail(); });
-boot();
+apiReady.then(() => {
+  api.onProgress((p) => { S.progress = p; if (p.id === S.selected) renderDetail(); });
+  boot();
+});
