@@ -33,10 +33,20 @@ jobs:
       - name: Version
         id: v
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF_NAME#v}"; else V="$(jq -r .info.productVersion wails.json)"; fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF_NAME#v}"; else V="$(jq -r .info.productVersion wails.json | tr -d '\r')"; fi
+          # Installer metadata needs a plain X.Y.Z (the Windows installer rejects "2.0" or "1.2.3-beta").
+          # v2.0 -> 2.0.0, v1.2.3-beta.1 -> 1.2.3. File names keep the tag as written.
+          NUM="${V%%[-+]*}"
+          IFS=. read -r a b c extra <<< "$NUM"
+          b=${b:-0}; c=${c:-0}
+          if ! [[ "$a" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ && "$c" =~ ^[0-9]+$ && -z "$extra" ]]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' is not a version. Use tags like v1.2.0 or v1.2.0-beta.1."
+            exit 1
+          fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
-          # The app bundle/installer metadata reads the version from wails.json.
-          jq --arg v "$V" '.info.productVersion = $v' wails.json > wails.tmp && mv wails.tmp wails.json
+          echo "Release version $V, installer version $a.$b.$c"
+          # The app bundle and installer metadata read the version from wails.json.
+          jq --arg v "$a.$b.$c" '.info.productVersion = $v' wails.json | tr -d '\r' > wails.tmp && mv wails.tmp wails.json
 
       - name: Linux build dependencies
         if: runner.os == 'Linux'
