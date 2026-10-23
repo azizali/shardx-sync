@@ -63,8 +63,9 @@
 <section id="view-main" class="view" hidden>
   <header class="topbar">
     <div class="brand"><span class="logo sm">⇅</span> ShardX Sync</div>
-    <div class="who"><span id="who-machine"></span> · <span id="who-email"></span></div>
+    <div class="who"><span id="who-machine"></span> · <span id="who-email"></span> <span class="chip" id="who-role" hidden></span></div>
     <div class="actions">
+      <button class="btn" id="btn-access" hidden>Team access</button>
       <button class="btn" id="btn-refresh" title="Refresh">Refresh</button>
       <button class="btn" id="btn-settings">Settings</button>
       <button class="btn ghost" id="btn-signout">Sign out</button>
@@ -81,6 +82,14 @@
   </div>
   <footer class="logbar"><div id="log" class="log"></div></footer>
 </section>
+
+<dialog id="dlg-access" class="dialog">
+  <div class="dhead"><h2>Team access</h2><span class="muted" style="flex:1"></span><button class="btn ghost" id="access-close">Close</button></div>
+  <div class="box"><h3>Members</h3><p>Admins see and manage every profile. Members see only what is shared with them.</p>
+    <div id="access-members"></div></div>
+  <div class="box"><h3>Folders</h3><p>A member who is checked for a folder can see every profile in it, including profiles added later.</p>
+    <div id="access-folders"></div></div>
+</dialog>
 
 <script src="api.js"></script>
 <script src="app.js"></script>

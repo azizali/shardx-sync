@@ -82,6 +82,7 @@ type Profile struct {
 	ProxyID        string   `json:"proxyId"`
 	Extensions     []string `json:"extensions"`
 	LastLaunchedAt *int64   `json:"lastLaunchedAt"` // unix ms
+	Temporary      bool     `json:"-"`              // ShardBrowser's API-made profiles; never synced
 }
 
 func ReadProfile(root, id string) (*Profile, error) {
@@ -96,12 +97,13 @@ func ReadProfile(root, id string) (*Profile, error) {
 			ProxyID        *string  `json:"proxy_id"`
 			Extensions     []string `json:"extensions"`
 			LastLaunchedAt any      `json:"last_launched_at"`
+			Temporary      bool     `json:"temporary"`
 		} `json:"_meta"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return nil, err
 	}
-	p := &Profile{ID: id, Name: raw.Name, Folder: raw.Meta.Folder, Extensions: raw.Meta.Extensions}
+	p := &Profile{ID: id, Name: raw.Name, Folder: raw.Meta.Folder, Extensions: raw.Meta.Extensions, Temporary: raw.Meta.Temporary}
 	if p.Name == "" {
 		p.Name = id
 	}
@@ -130,7 +132,7 @@ func ListLocalProfiles(root string) ([]*Profile, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		if p, err := ReadProfile(root, strings.TrimSuffix(e.Name(), ".json")); err == nil {
+		if p, err := ReadProfile(root, strings.TrimSuffix(e.Name(), ".json")); err == nil && !p.Temporary {
 			out = append(out, p)
 		}
 	}

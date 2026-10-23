@@ -204,15 +204,21 @@ func (a *App) exclusive(fn func() (any, error)) Result {
 func (a *App) State() Result {
 	c := a.loadConfig()
 	var user *core.User
+	var role string
 	cl, cloudErr := a.getCloud()
 	if cloudErr == nil {
 		user = cl.CurrentUser()
+	}
+	if user != nil {
+		// Register also adds users who signed in before team roles existed, so admins can grant them access.
+		role, _ = cl.Register()
 	}
 	root := core.ResolveShardxRoot(c.ShardxRoot)
 	hasPass := a.secrets.Passphrase() != ""
 	return result(map[string]any{
 		"configured": hasPass && cloudErr == nil,
 		"user":       user,
+		"role":       role,
 		"config": map[string]any{
 			"neonUrl": c.neonURL(), "storageUrl": c.storageURL(), "shardxRoot": c.ShardxRoot, "machine": c.machine(),
 			"skipCaches": c.skipCaches(), "shardxRootResolved": root, "shardxRootValid": core.IsValidShardxRoot(root), "hasPassphrase": hasPass,
@@ -365,6 +371,56 @@ func (a *App) TakeLock(id string, force bool) Result {
 		}
 		return e.TakeLock(id, force)
 	})
+}
+
+// RestoreRemote brings back a profile that was deleted in the cloud. Admins only.
+func (a *App) RestoreRemote(id string) Result {
+	cl, err := a.getCloud()
+	if err != nil {
+		return result(nil, err)
+	}
+	return result(true, cl.RestoreProfile(id))
+}
+
+// Team returns the member list and who can see what. Admins only.
+func (a *App) Team() Result {
+	cl, err := a.getCloud()
+	if err != nil {
+		return result(nil, err)
+	}
+	members, err := cl.ListMembers()
+	if err != nil {
+		return result(nil, err)
+	}
+	grants, err := cl.ListGrants()
+	if err != nil {
+		return result(nil, err)
+	}
+	return result(map[string]any{"members": members, "grants": grants}, nil)
+}
+
+func (a *App) SetProfileAccess(id string, userIDs []string) Result {
+	cl, err := a.getCloud()
+	if err != nil {
+		return result(nil, err)
+	}
+	return result(true, cl.SetProfileAccess(id, userIDs))
+}
+
+func (a *App) SetFolderAccess(folder string, userIDs []string) Result {
+	cl, err := a.getCloud()
+	if err != nil {
+		return result(nil, err)
+	}
+	return result(true, cl.SetFolderAccess(folder, userIDs))
+}
+
+func (a *App) SetMemberRole(userID, role string) Result {
+	cl, err := a.getCloud()
+	if err != nil {
+		return result(nil, err)
+	}
+	return result(true, cl.SetMemberRole(userID, role))
 }
 
 func (a *App) DeleteRemote(id string) Result {

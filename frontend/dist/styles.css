@@ -58,3 +58,12 @@ details.adv { border-top: 1px solid var(--line); padding-top: 10px; display: fle
 details.adv summary { color: var(--muted); cursor: pointer; font-size: 13px; margin-bottom: 8px; }
 details.adv[open] summary { margin-bottom: 12px; }
 #view-login { display: grid; place-items: center; }
+.dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px; width: min(760px, 92vw); max-height: 88vh; overflow: auto; padding: 20px; }
+.dialog::backdrop { background: rgba(0, 0, 0, .55); }
+.dialog .dhead { margin-bottom: 16px; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th, .tbl td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.tbl th { color: var(--muted); font-weight: 500; }
+.tbl select { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; font: inherit; }
+.chip.role { color: var(--accent); }
+.s-deleted { color: var(--red); }

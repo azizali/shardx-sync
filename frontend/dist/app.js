@@ -14,7 +14,8 @@ const STATUS_HELP = {
   'local-only': 'Only on this computer. Upload to share it with your team.',
   'cloud-only': 'Not on this computer yet. Download to add it to ShardX.',
 };
-let S = { items: [], selected: null, busy: null, progress: null, state: null, launcherRunning: false };
+let S = { items: [], selected: null, busy: null, progress: null, state: null, launcherRunning: false, role: '', team: null };
+const isAdmin = () => S.role === 'admin';
 
 function show(view) { for (const v of ['setup', 'login', 'main']) $(`#view-${v}`).hidden = v !== view; }
 function fmtBytes(n) { if (n == null) return '—'; const u = ['B', 'KB', 'MB', 'GB']; let i = 0; while (n >= 1024 && i < 3) { n /= 1024; i++; } return `${n.toFixed(i ? 1 : 0)} ${u[i]}`; }
@@ -35,6 +36,11 @@ async function boot() {
   show('main');
   $('#who-email').textContent = S.state.user.email;
   $('#who-machine').textContent = S.state.config.machine;
+  S.role = S.state.role || '';
+  $('#who-role').hidden = !S.role;
+  $('#who-role').textContent = isAdmin() ? 'Admin' : 'Member';
+  $('#btn-access').hidden = !isAdmin();
+  if (isAdmin()) loadTeam();
   refresh();
 }
 
@@ -92,7 +98,44 @@ $('#reset-form').addEventListener('submit', async (e) => {
   if (!r.ok) { $('#reset-err').textContent = r.error.message; return; }
   boot();
 });
-$('#btn-signout').onclick = async () => { await api.signOut(); S.items = []; S.selected = null; boot(); };
+$('#btn-signout').onclick = async () => { await api.signOut(); S.items = []; S.selected = null; S.role = ''; S.team = null; boot(); };
+
+// ---------- team access (admins) ----------
+async function loadTeam() {
+  const r = await api.team();
+  if (r.ok) S.team = r.data; else log(r.error.message, 'bad');
+  renderAccess();
+  if (S.selected) renderDetail();
+}
+$('#btn-access').onclick = () => { $('#dlg-access').showModal(); loadTeam(); };
+$('#access-close').onclick = () => $('#dlg-access').close();
+function renderAccess() {
+  const t = S.team; if (!t || !$('#dlg-access').open) return;
+  const members = t.members;
+  $('#access-members').innerHTML = `<table class="tbl"><tr><th>Email</th><th>Role</th></tr>${members.map((m) => `<tr><td>${esc(m.email)}</td><td>
+    <select data-role-of="${esc(m.user_id)}"><option value="member" ${m.role === 'member' ? 'selected' : ''}>Member</option>
+    <option value="admin" ${m.role === 'admin' ? 'selected' : ''}>Admin</option></select></td></tr>`).join('')}</table>`;
+  const plain = members.filter((m) => m.role !== 'admin');
+  const folders = [...new Set([...S.items.map((i) => i.folder).filter(Boolean), ...Object.keys(t.grants.folders)])].sort();
+  $('#access-folders').innerHTML = !folders.length ? '<p class="muted">No folders yet.</p>' : `<table class="tbl"><tr><th>Folder</th>${plain.map((m) => `<th>${esc(m.email)}</th>`).join('')}</tr>
+    ${folders.map((f) => `<tr><td>${esc(f)}</td>${plain.map((m) => `<td><input type="checkbox" data-folder="${esc(f)}" data-user="${esc(m.user_id)}"
+      ${(t.grants.folders[f] || []).includes(m.user_id) ? 'checked' : ''}></td>`).join('')}</tr>`).join('')}</table>`;
+}
+$('#dlg-access').addEventListener('change', async (e) => {
+  const el = e.target;
+  if (el.dataset.roleOf) {
+    const r = await api.setMemberRole(el.dataset.roleOf, el.value);
+    if (!r.ok) alert(r.error.message);
+    return loadTeam();
+  }
+  if (el.dataset.folder) {
+    const f = el.dataset.folder; const current = new Set(S.team.grants.folders[f] || []);
+    el.checked ? current.add(el.dataset.user) : current.delete(el.dataset.user);
+    const r = await api.setFolderAccess(f, [...current]);
+    if (!r.ok) alert(r.error.message);
+    return loadTeam();
+  }
+});
 
 // ---------- list ----------
 async function refresh() {
@@ -118,7 +161,7 @@ function renderList() {
   const items = S.items.filter((i) => !q || i.name.toLowerCase().includes(q) || (i.folder || '').toLowerCase().includes(q));
   $('#list').innerHTML = items.map((i) => {
     const lock = i.remote?.lock ? (i.remote.lock.mine ? ' · checked out by you' : ` · in use by ${i.remote.lock.email}`) : '';
-    const sync = i.remote ? `synced ${ago(i.remote.updatedAt)}` : 'not in cloud';
+    const sync = i.remote?.deleted ? 'deleted in cloud' : i.remote ? `synced ${ago(i.remote.updatedAt)}` : 'not in cloud';
     return `<div class="item ${S.selected === i.id ? 'sel' : ''}" data-id="${esc(i.id)}">
       <div class="name">${esc(i.name)}</div><span class="chip s-${i.status}">${STATUS[i.status]}</span>
       <div class="sub">${i.folder ? esc(i.folder) + ' · ' : ''}${esc(sync)}${esc(lock)}${i.running ? ' · running' : ''}</div></div>`;
@@ -142,6 +185,7 @@ function renderDetail() {
     <div class="dsub">${esc(STATUS_HELP[i.status])}</div>
     ${p ? `<div class="progress"><div class="bar"><i style="width:${p.pct ?? 0}%"></i></div><div class="ptext">${esc(p.step)}${p.detail ? ' · ' + esc(p.detail) : ''}</div></div>` : ''}
     ${i.running ? '<p class="warn">This profile is open in ShardX right now. Close its browser window before syncing.</p>' : ''}
+    ${r?.deleted ? `<p class="warn">Deleted in the cloud${isAdmin() ? '. Restore it to bring it back for the team, or delete it for good.' : '. An admin can restore it.'}</p>` : ''}
     <div class="grid">
       <div class="stat"><div class="k">Last sync (cloud)</div><div class="v">${r ? esc(ago(r.updatedAt)) : 'Never'}</div>
         <div class="v2">${r ? `v${r.version} by ${esc(r.updatedBy)} on ${esc(r.updatedFrom)} (${esc(osName(r.updatedOs))})<br>${esc(when(r.updatedAt))}` : ''}</div></div>
@@ -166,8 +210,10 @@ function renderDetail() {
     <div class="row" style="margin-top:20px">
       <button class="btn ghost" id="a-backups">Open backups folder</button>
       <button class="btn ghost" id="a-shardx">Open ShardX folder</button>
-      ${r ? `<button class="btn danger" id="a-delete" ${busy ? 'disabled' : ''}>Remove from cloud</button>` : ''}
-    </div>`;
+      ${r && r.deleted && isAdmin() ? `<button class="btn primary" id="a-restore" ${busy ? 'disabled' : ''}>Restore</button>` : ''}
+      ${r && !r.deleted ? `<button class="btn danger" id="a-delete" ${busy ? 'disabled' : ''}>${isAdmin() ? 'Delete for good' : 'Delete'}</button>` : ''}
+    </div>
+    ${isAdmin() && r && !r.deleted && S.team ? profileAccessBox(i) : ''}`;
   const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
   on('#a-push', () => doPush(i, { keepLock: $('#a-keep').checked }));
   on('#a-pull', () => doPull(i, { takeLock: $('#a-lock').checked }));
@@ -175,11 +221,32 @@ function renderDetail() {
   on('#a-release', () => run(i, 'Release lock', () => api.releaseLock(i.id, false)));
   on('#a-force', () => confirm(`Force unlock "${i.name}"?\n\n${lock.email} may still be using it. If they upload later, their upload will be blocked until they download again.`)
     && run(i, 'Force unlock', () => api.releaseLock(i.id, true)));
-  on('#a-delete', () => confirm(`Remove "${i.name}" from the cloud?\n\nThe copy on this computer stays. Your teammate will no longer be able to download it.`)
-    && run(i, 'Remove from cloud', () => api.deleteRemote(i.id)));
+  on('#a-delete', () => (isAdmin()
+    ? confirm(`Delete "${i.name}" for good?\n\nIts cloud copy and every version are removed. The copy on this computer stays.`)
+    : confirm(`Delete "${i.name}" for the team?\n\nIt disappears from everyone's list. An admin can restore it.`))
+    && run(i, 'Delete', () => api.deleteRemote(i.id)));
+  on('#a-restore', () => run(i, 'Restore', () => api.restoreRemote(i.id)));
   on('#a-backups', () => api.openBackups());
   on('#a-shardx', () => api.openShardx());
 }
+
+// Admins choose which members can open this one profile. Folder access also applies, and is shown beside it.
+function profileAccessBox(i) {
+  const direct = S.team.grants.profiles[i.id] || [];
+  const plain = S.team.members.filter((m) => m.role !== 'admin');
+  return `<div class="box"><h3>Who can see this profile</h3><p>Admins always see it${i.folder ? `. Members of the folder “${esc(i.folder)}” see it too` : ''}.</p>
+    ${plain.map((m) => `<label class="check"><input type="checkbox" data-profile-user="${esc(m.user_id)}" ${direct.includes(m.user_id) ? 'checked' : ''}> ${esc(m.email)}</label>`).join('') || '<span class="muted">No members yet</span>'}
+  </div>`;
+}
+$('#detail').addEventListener('change', async (e) => {
+  const el = e.target; const i = S.items.find((x) => x.id === S.selected);
+  if (!el.dataset.profileUser || !i) return;
+  const current = new Set(S.team.grants.profiles[i.id] || []);
+  el.checked ? current.add(el.dataset.profileUser) : current.delete(el.dataset.profileUser);
+  const r = await api.setProfileAccess(i.id, [...current]);
+  if (!r.ok) alert(r.error.message);
+  loadTeam();
+});
 
 async function run(i, label, fn) {
   S.busy = i.id; S.progress = { id: i.id, step: label, pct: 0 }; renderDetail();

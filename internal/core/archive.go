@@ -19,7 +19,8 @@ import (
 const PartSize = 40 * 1024 * 1024
 
 // PackToFile writes a gzip-compressed tar of files (paths relative to root) to out.
-func PackToFile(root string, files []FileEntry, out string) (size int64, sha string, err error) {
+// extra adds in-memory entries by name, such as CookiesFile.
+func PackToFile(root string, files []FileEntry, extra map[string][]byte, out string) (size int64, sha string, err error) {
 	f, err := os.Create(out)
 	if err != nil {
 		return 0, "", err
@@ -31,6 +32,15 @@ func PackToFile(root string, files []FileEntry, out string) (size int64, sha str
 	for _, fe := range files {
 		if err := addFile(tw, root, fe.Rel); err != nil {
 			return 0, "", fmt.Errorf("packing %s: %w", fe.Rel, err)
+		}
+	}
+	for name, data := range extra {
+		hdr := &tar.Header{Name: name, Mode: 0o600, Size: int64(len(data)), ModTime: time.Now(), Typeflag: tar.TypeReg, Format: tar.FormatPAX}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return 0, "", err
+		}
+		if _, err := tw.Write(data); err != nil {
+			return 0, "", err
 		}
 	}
 	if err := tw.Close(); err != nil {
@@ -130,7 +140,7 @@ func ExtractProfile(file, dest, profileID string, extensionIDs []string) (int, e
 				return false
 			}
 		}
-		if rel == "profiles/"+profileID+".json" || strings.HasPrefix(rel, "user-data/"+profileID+"/") {
+		if rel == "profiles/"+profileID+".json" || rel == CookiesFile || strings.HasPrefix(rel, "user-data/"+profileID+"/") {
 			return true
 		}
 		m := extDirRe.FindStringSubmatch(rel)

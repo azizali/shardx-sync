@@ -26,6 +26,7 @@ type fakeCloud struct {
 	user User
 	// beforeCommit lets a test inject a competing upload.
 	beforeCommit func()
+	role         string
 }
 
 func (c *fakeCloud) holder(r *Row, machine string) bool {
@@ -114,10 +115,24 @@ func (c *fakeCloud) CommitVersion(a CommitArgs) (*Row, error) {
 	return &cp, nil
 }
 
-func (c *fakeCloud) DeleteProfileRow(id string) error {
+func (c *fakeCloud) MyRole() (string, error) {
+	if c.role == "" {
+		return RoleMember, nil
+	}
+	return c.role, nil
+}
+
+// DeleteProfile mirrors delete_profile in neon/setup.sql: admins remove the row, members set deleted_at.
+func (c *fakeCloud) DeleteProfile(id string) error {
 	c.b.mu.Lock()
 	defer c.b.mu.Unlock()
-	delete(c.b.rows, id)
+	if c.role == RoleAdmin {
+		delete(c.b.rows, id)
+		return nil
+	}
+	if r := c.b.rows[id]; r != nil {
+		r.DeletedAt = time.Now().Format(time.RFC3339)
+	}
 	return nil
 }
 

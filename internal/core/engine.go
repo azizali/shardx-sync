@@ -129,6 +129,7 @@ type RemoteInfo struct {
 	UpdatedFrom string    `json:"updatedFrom"`
 	UpdatedOS   string    `json:"updatedOs"`
 	Lock        *LockInfo `json:"lock"`
+	Deleted     bool      `json:"deleted"` // soft-deleted; only admins see these rows
 }
 
 type Item struct {
@@ -205,7 +206,7 @@ func (e *Engine) Overview() ([]Item, error) {
 			it.LocalVersion, it.LastSyncedHere = &v, &at
 		}
 		if r := p.remote; r != nil {
-			ri := &RemoteInfo{Version: r.Version, SizeBytes: r.SizeBytes, UpdatedAt: r.UpdatedAt, UpdatedBy: r.UpdatedByEmail, UpdatedFrom: r.UpdatedFrom, UpdatedOS: r.UpdatedOS}
+			ri := &RemoteInfo{Version: r.Version, SizeBytes: r.SizeBytes, UpdatedAt: r.UpdatedAt, UpdatedBy: r.UpdatedByEmail, UpdatedFrom: r.UpdatedFrom, UpdatedOS: r.UpdatedOS, Deleted: r.DeletedAt != ""}
 			if r.LockedBy != "" {
 				ri.Lock = &LockInfo{Email: r.LockedByEmail, Machine: r.LockedFrom, At: r.LockedAt, Mine: e.isMine(r)}
 			}
@@ -294,7 +295,8 @@ func (e *Engine) Push(id string, opt PushOptions) (*Row, error) {
 
 	raw := TotalBytes(files)
 	e.progress(id, fmt.Sprintf("Compressing %d files", len(files)), 5, FormatBytes(raw))
-	size, sha, err := PackToFile(e.Root, files, archive)
+	extra, cookieNote := e.cookieBundle(id)
+	size, sha, err := PackToFile(e.Root, files, extra, archive)
 	if err != nil {
 		return nil, err
 	}
@@ -343,8 +345,22 @@ func (e *Engine) Push(id string, opt PushOptions) (*Row, error) {
 			}
 		}
 	}
-	e.progress(id, fmt.Sprintf("Uploaded version %d", row.Version), 100, "")
+	e.progress(id, fmt.Sprintf("Uploaded version %d", row.Version), 100, cookieNote)
 	return row, nil
+}
+
+// cookieBundle puts the profile's decrypted cookies into the archive as cookies.json. A failure is not
+// fatal: the Cookies database still uploads, and the returned note tells the user what may not carry over.
+func (e *Engine) cookieBundle(id string) (map[string][]byte, string) {
+	cookies, err := ExportCookies(filepath.Join(e.Root, "user-data", id), e.tmpDir)
+	if err != nil {
+		return nil, "Cookies were not exported, so site logins may need to be redone: " + err.Error()
+	}
+	if cookies == nil {
+		cookies = []Cookie{}
+	}
+	b, _ := json.Marshal(cookies)
+	return map[string][]byte{CookiesFile: b}, ""
 }
 
 func (e *Engine) findProxy(proxyID string) json.RawMessage {
@@ -486,9 +502,19 @@ func (e *Engine) Pull(id string, opt PullOptions) (res *PullResult, err error) {
 	if !exists(filepath.Join(staging, "profiles", id+".json")) {
 		return nil, Errf("CORRUPT", "Archive has no profile file. Nothing was changed.")
 	}
+	cookies, hasCookies, err := readCookiesFile(filepath.Join(staging, CookiesFile))
+	if err != nil {
+		return nil, err
+	}
 	e.progress(id, "Backing up current copy", 85, "")
 	if err := e.installFromStaging(id, staging, meta); err != nil {
 		return nil, err
+	}
+	cookieNote := ""
+	if hasCookies {
+		if err := ImportCookies(filepath.Join(e.Root, "user-data", id), cookies); err != nil {
+			cookieNote = "Cookies could not be restored here, so site logins may need to be redone: " + err.Error()
+		}
 	}
 	if p, err := ReadProfile(e.Root, id); err == nil {
 		_, fp, _ := e.localFingerprint(p)
@@ -496,9 +522,9 @@ func (e *Engine) Pull(id string, opt PullOptions) (res *PullResult, err error) {
 	}
 	e.pruneBackups(id)
 	cross := meta.OS != "" && meta.OS != runtime.GOOS
-	detail := ""
+	detail := cookieNote
 	if cross {
-		detail = "Uploaded from a different OS. Some site logins may need to be redone."
+		detail = strings.TrimSpace("Uploaded from a different OS. Some site logins may need to be redone. " + cookieNote)
 	}
 	e.progress(id, fmt.Sprintf("Downloaded version %d", remote.Version), 100, detail)
 	return &PullResult{Version: remote.Version, CrossOS: cross, FromOS: meta.OS}, nil
@@ -619,6 +645,8 @@ func (e *Engine) pruneBackups(id string) {
 func (e *Engine) ReleaseLock(id string, force bool) (*Row, error) { return e.Cloud.ReleaseLock(id, e.Machine, force) }
 func (e *Engine) TakeLock(id string, force bool) (*Row, error)    { return e.Cloud.ClaimLock(id, e.Machine, force) }
 
+// DeleteFromCloud is a soft delete for everyone but admins: the profile disappears from the team's list
+// and an admin can restore it. An admin deletes for good, which also removes the uploaded archive.
 func (e *Engine) DeleteFromCloud(id string) error {
 	remote, err := e.Cloud.GetProfile(id)
 	if err != nil || remote == nil {
@@ -626,6 +654,13 @@ func (e *Engine) DeleteFromCloud(id string) error {
 	}
 	if remote.LockedBy != "" && !e.isMine(remote) {
 		return Errf("LOCKED", "In use by %s. Ask them to release it first.", remote.LockedByEmail)
+	}
+	role, err := e.Cloud.MyRole()
+	if err != nil {
+		return err
+	}
+	if role != RoleAdmin {
+		return e.Cloud.DeleteProfile(id)
 	}
 	folders, err := e.Cloud.ListFolders(id)
 	if err != nil {
@@ -636,7 +671,7 @@ func (e *Engine) DeleteFromCloud(id string) error {
 			return err
 		}
 	}
-	if err := e.Cloud.DeleteProfileRow(id); err != nil {
+	if err := e.Cloud.DeleteProfile(id); err != nil {
 		return err
 	}
 	e.state.set(id, nil)

@@ -270,6 +270,15 @@ var (
 	conflictRe = regexp.MustCompile(`CONFLICT:(\d+)`)
 )
 
+// Access errors raised by the functions in neon/setup.sql.
+var accessRe = regexp.MustCompile(`^(NO_ACCESS|DELETED|ADMIN_ONLY)\b`)
+
+var accessMessages = map[string]string{
+	"NO_ACCESS":  "You do not have access to this profile.",
+	"DELETED":    "This profile was deleted. Ask an admin to restore it.",
+	"ADMIN_ONLY": "Only an admin can do this.",
+}
+
 func translateDBError(status int, body map[string]any) error {
 	msg, _ := body["message"].(string)
 	code, _ := body["code"].(string)
@@ -281,6 +290,9 @@ func translateDBError(status int, body map[string]any) error {
 	}
 	if m := conflictRe.FindStringSubmatch(msg); m != nil {
 		return &SyncError{Code: "CONFLICT", Message: fmt.Sprintf("Someone uploaded a newer version (v%s) while you were working.", m[1])}
+	}
+	if m := accessRe.FindStringSubmatch(msg); m != nil {
+		return Errf(m[1], "%s", accessMessages[m[1]])
 	}
 	if code == "42P01" || code == "PGRST202" || code == "PGRST205" || strings.Contains(msg, "does not exist") || strings.Contains(msg, "Could not find") {
 		return Errf("SETUP", "The Neon database is not set up yet. Run neon/setup.sql on it.")
@@ -374,8 +386,95 @@ func (c *Cloud) CommitVersion(a CommitArgs) (*Row, error) {
 	})
 }
 
-func (c *Cloud) DeleteProfileRow(id string) error {
-	return c.db("DELETE", "/synced_profiles?id=eq."+url.QueryEscape(id), nil, nil)
+// DeleteProfile is a soft delete for members and a permanent one for admins. The server decides by role.
+func (c *Cloud) DeleteProfile(id string) error {
+	return c.db("POST", "/rpc/delete_profile", map[string]any{"p_id": id}, nil)
+}
+
+// RestoreProfile brings back a soft-deleted profile. Admins only.
+func (c *Cloud) RestoreProfile(id string) error {
+	return c.db("POST", "/rpc/restore_profile", map[string]any{"p_id": id}, nil)
+}
+
+// MyRole returns the signed-in user's role. A user the server has not seen yet is a member.
+func (c *Cloud) MyRole() (string, error) {
+	var role string
+	err := c.db("POST", "/rpc/my_role", map[string]any{}, &role)
+	return role, err
+}
+
+// Register records the signed-in user in the team member list so an admin can grant them access.
+func (c *Cloud) Register() (string, error) {
+	var role string
+	err := c.db("POST", "/rpc/register_me", map[string]any{}, &role)
+	return role, err
+}
+
+// Member is one person on the team, as the admin sees them.
+type Member struct {
+	UserID string `json:"user_id"`
+	Email  string `json:"email"`
+	Role   string `json:"role"`
+}
+
+func (c *Cloud) ListMembers() ([]Member, error) {
+	var out []Member
+	err := c.db("GET", "/team_members?select=user_id,email,role&order=email.asc", nil, &out)
+	return out, err
+}
+
+// Grants lists who can see which profiles directly and which folders. Keys are profile ids and folder names.
+type Grants struct {
+	Profiles map[string][]string `json:"profiles"`
+	Folders  map[string][]string `json:"folders"`
+}
+
+func (c *Cloud) ListGrants() (Grants, error) {
+	g := Grants{Profiles: map[string][]string{}, Folders: map[string][]string{}}
+	var profiles []struct {
+		ProfileID string `json:"profile_id"`
+		UserID    string `json:"user_id"`
+	}
+	if err := c.db("GET", "/profile_grants?select=profile_id,user_id", nil, &profiles); err != nil {
+		return g, err
+	}
+	for _, p := range profiles {
+		g.Profiles[p.ProfileID] = append(g.Profiles[p.ProfileID], p.UserID)
+	}
+	var folders []struct {
+		Folder string `json:"folder"`
+		UserID string `json:"user_id"`
+	}
+	if err := c.db("GET", "/folder_grants?select=folder,user_id", nil, &folders); err != nil {
+		return g, err
+	}
+	for _, f := range folders {
+		g.Folders[f.Folder] = append(g.Folders[f.Folder], f.UserID)
+	}
+	return g, nil
+}
+
+// SetProfileAccess replaces who can see one profile directly. Admins only.
+func (c *Cloud) SetProfileAccess(id string, userIDs []string) error {
+	return c.db("POST", "/rpc/set_profile_access", map[string]any{"p_id": id, "p_user_ids": nonNil(userIDs)}, nil)
+}
+
+// SetFolderAccess replaces who can see every profile in one folder. Admins only.
+func (c *Cloud) SetFolderAccess(folder string, userIDs []string) error {
+	return c.db("POST", "/rpc/set_folder_access", map[string]any{"p_folder": folder, "p_user_ids": nonNil(userIDs)}, nil)
+}
+
+// SetMemberRole makes a member an admin or back to a member. Admins only.
+func (c *Cloud) SetMemberRole(userID, role string) error {
+	return c.db("POST", "/rpc/set_member_role", map[string]any{"p_user_id": userID, "p_role": role}, nil)
+}
+
+// nonNil keeps an empty list an empty JSON array, not null, so the server clears the grants.
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 func (c *Cloud) GetTeamSetting(key string) (string, bool, error) {

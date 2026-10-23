@@ -35,6 +35,25 @@ The project is `shardx-sync` (`frosty-water-08741847`), branch `main`. Its publi
 
 To remove someone, delete their user in **Auth > Users**. Their session stops working within 15 minutes.
 
+## Roles and access
+
+| Role | Can do |
+| --- | --- |
+| Admin | See and manage every profile. Grant access. Restore deleted profiles. Delete for good. |
+| Member | See only the profiles shared with them, directly or through a folder. Upload, download and check out those. Delete hides a profile for the team (a soft delete). |
+
+Admins open **Team access** in the top bar to set roles and folder access. On a profile's page, admins tick the members who can see it.
+Folder access follows the ShardBrowser folder. Tags do not sync yet, so they cannot be used for access.
+
+A new teammate can only be granted access after they have signed in once, because the app records them on sign-in.
+The team's first admin is set once, in the SQL Editor, after they have signed in:
+
+```sql
+select public.bootstrap_admin('you@example.com');
+```
+
+Upgrading an existing team: run `neon/setup.sql` again. It is safe to repeat. Afterwards only the admin sees profiles until they are shared.
+
 If the emailed code does not arrive, a fallback is to open sign-ups briefly, let them create the account
 from the password screen, then close sign-ups again:
 
@@ -48,9 +67,9 @@ neon neon-auth config email-password update --project-id frosty-water-08741847 -
 Only needed to move to a different project. Run these against the new project's `main` branch:
 
 1. Enable the Data API with Neon Auth (Console > Data API > Enable), on database `neondb`.
-2. Run `neon/setup.sql` in the SQL Editor.
+2. Run `neon/setup.sql` in the SQL Editor. Sign in to the app once, then run `select public.bootstrap_admin('you@example.com');`.
 3. Create a private Object Storage bucket named `profiles`.
-4. Deploy the storage function: `pnpm install && pnpm deploy:storage` (edit the project id in `neon/storage-fn/package.json` first).
+4. Deploy the storage function: `pnpm install && pnpm deploy:storage` (edit the project id in `neon/storage-fn/package.json` first). Set its `NEON_DATA_API_URL` setting to the project's Data API URL ending in `/rest/v1`, next to `NEON_AUTH_JWKS_URL`. The function checks each request against the caller's access through this URL.
 5. Auth settings: disable sign-up, remove OAuth providers you don't use, and add `https://shardx-sync.app` as a trusted domain.
 6. Put the new database URL and function URL in `internal/core/defaults.go` (or in the app's Settings > Neon connection).
 
@@ -65,7 +84,8 @@ Only needed to move to a different project. Run these against the new project's 
 | Upload | Sends this computer's copy and releases your check-out (tick the box to keep it). |
 | Download | Replaces this computer's copy with the cloud version and checks it out to you. Your old copy goes to the backups folder (last 3 kept). |
 | Release / Force unlock | Frees the check-out without uploading. |
-| Remove from cloud | Deletes the cloud copy only. |
+| Delete | Members: hides the profile for the team, and an admin can restore it. Admins: deletes the cloud copy and every version for good. The copy on this computer stays. |
+| Restore | Admins only. Brings back a deleted profile. |
 
 Typical flow: **Download → use the profile in ShardX → close its window → Upload.**
 
@@ -79,10 +99,10 @@ Rules the app enforces:
 ## Moving profiles between different operating systems
 
 Fingerprint, bookmarks, history, local storage, extensions and proxy all move across macOS, Windows and Linux.
-Chromium encrypts **cookies and saved passwords** with a key tied to the operating system's keychain.
-Whether those survive a move depends on how ShardX stores that key, which has not been verified yet.
-Test with one profile first: upload on one computer, download on the other, and check you are still logged in to a site.
-If logins do not carry over, sites will simply ask you to sign in again. Nothing else is affected.
+Cookies are exported with each upload and restored on download, so you stay logged in to sites when a profile moves.
+They travel inside the encrypted archive, and each computer re-encrypts them with its own key. This was checked on
+macOS with ShardBrowser 2.1 data. The Windows path has not been tested on a Windows machine yet.
+Saved passwords sync with the rest of the browser data, unchanged. Their key is tied to the operating system, so they may not open on another OS. That is not handled yet.
 
 ## Development
 

@@ -251,7 +251,7 @@ func TestExtractRejectsForeignPaths(t *testing.T) {
 	w(t, src, "proxies.json", []byte("evil"))
 	w(t, src, "user-data/other-id/x", []byte("evil"))
 	file := filepath.Join(t.TempDir(), "a.tar.gz")
-	if _, _, err := PackToFile(src, []FileEntry{{Rel: "profiles/" + tID + ".json"}, {Rel: "proxies.json"}, {Rel: "user-data/other-id/x"}}, file); err != nil {
+	if _, _, err := PackToFile(src, []FileEntry{{Rel: "profiles/" + tID + ".json"}, {Rel: "proxies.json"}, {Rel: "user-data/other-id/x"}}, nil, file); err != nil {
 		t.Fatal(err)
 	}
 	dest := t.TempDir()
