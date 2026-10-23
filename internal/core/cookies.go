@@ -69,7 +69,7 @@ func ExportCookies(udd, tmpDir string) ([]Cookie, error) {
 	if !exists(src) {
 		return nil, nil
 	}
-	key, err := osCryptKey(udd)
+	key, err := osCryptKey(udd, false)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +125,7 @@ func ExportCookies(udd, tmpDir string) ([]Cookie, error) {
 // ImportCookies replaces a profile's cookie store with cookies, encrypting each value with this computer's key.
 // The profile must not be running: the browser would overwrite the store when it exits.
 func ImportCookies(udd string, cookies []Cookie) error {
-	key, err := osCryptKey(udd)
+	key, err := osCryptKey(udd, true)
 	if err != nil {
 		return err
 	}

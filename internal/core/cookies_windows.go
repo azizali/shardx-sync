@@ -22,6 +22,7 @@ import (
 var (
 	crypt32                = syscall.NewLazyDLL("crypt32.dll")
 	procCryptUnprotectData = crypt32.NewProc("CryptUnprotectData")
+	procCryptProtectData   = crypt32.NewProc("CryptProtectData")
 	kernel32               = syscall.NewLazyDLL("kernel32.dll")
 	procLocalFree          = kernel32.NewProc("LocalFree")
 )
@@ -31,13 +32,18 @@ type dataBlob struct {
 	pbData *byte
 }
 
-func dpapiUnprotect(in []byte) ([]byte, error) {
+// dpapi wraps (protect) or unwraps (!protect) data for the current Windows user.
+func dpapi(in []byte, protect bool) ([]byte, error) {
 	if len(in) == 0 {
 		return nil, errors.New("empty DPAPI blob")
 	}
 	inBlob := dataBlob{cbData: uint32(len(in)), pbData: &in[0]}
 	var out dataBlob
-	r, _, err := procCryptUnprotectData.Call(uintptr(unsafe.Pointer(&inBlob)), 0, 0, 0, 0, 0, uintptr(unsafe.Pointer(&out)))
+	proc := procCryptUnprotectData
+	if protect {
+		proc = procCryptProtectData
+	}
+	r, _, err := proc.Call(uintptr(unsafe.Pointer(&inBlob)), 0, 0, 0, 0, 0, uintptr(unsafe.Pointer(&out)))
 	if r == 0 {
 		return nil, err
 	}
@@ -47,29 +53,64 @@ func dpapiUnprotect(in []byte) ([]byte, error) {
 	return res, nil
 }
 
-func osCryptKey(udd string) ([]byte, error) {
-	b, err := os.ReadFile(filepath.Join(udd, "Local State"))
-	if err != nil {
-		return nil, errors.New("this profile has no cookie key (Local State) yet")
+// osCryptKey reads the cookie key from Local State. When there is none and mint is set (imports only),
+// it creates one the way ShardBrowser does. Existing keys are never replaced: other data may depend on them.
+func osCryptKey(udd string, mint bool) ([]byte, error) {
+	path := filepath.Join(udd, "Local State")
+	state := map[string]any{}
+	if b, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(b, &state); err != nil {
+			return nil, errors.New("Local State is damaged")
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
 	}
-	var state struct {
-		OSCrypt struct {
-			EncryptedKey string `json:"encrypted_key"`
-		} `json:"os_crypt"`
+	osc, _ := state["os_crypt"].(map[string]any)
+	enc, _ := osc["encrypted_key"].(string)
+	if enc == "" {
+		if !mint {
+			return nil, errors.New("this profile has no cookie key (Local State) yet")
+		}
+		return mintOSCryptKey(path, state)
 	}
-	if err := json.Unmarshal(b, &state); err != nil || state.OSCrypt.EncryptedKey == "" {
-		return nil, errors.New("Local State has no cookie key")
-	}
-	raw, err := base64.StdEncoding.DecodeString(state.OSCrypt.EncryptedKey)
+	raw, err := base64.StdEncoding.DecodeString(enc)
 	if err != nil || len(raw) <= 5 {
 		return nil, errors.New("Local State cookie key is damaged")
 	}
-	key, err := dpapiUnprotect(raw[5:]) // strip the "DPAPI" prefix
+	key, err := dpapi(raw[5:], false) // strip the "DPAPI" prefix
 	if err != nil {
 		return nil, errors.New("this computer cannot open the cookie key of this profile")
 	}
 	if len(key) != 32 {
 		return nil, errors.New("cookie key has an unexpected length")
+	}
+	return key, nil
+}
+
+func mintOSCryptKey(path string, state map[string]any) ([]byte, error) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	wrapped, err := dpapi(key, true)
+	if err != nil {
+		return nil, err
+	}
+	osc, _ := state["os_crypt"].(map[string]any)
+	if osc == nil {
+		osc = map[string]any{}
+	}
+	osc["encrypted_key"] = base64.StdEncoding.EncodeToString(append([]byte("DPAPI"), wrapped...))
+	state["os_crypt"] = osc
+	b, err := json.Marshal(state)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		return nil, err
 	}
 	return key, nil
 }

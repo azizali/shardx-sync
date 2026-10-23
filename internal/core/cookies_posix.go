@@ -13,7 +13,8 @@ import (
 
 // osCryptKey is the key ShardBrowser derives on macOS and Linux. It is fixed, not stored per computer,
 // so a cookie store written on one Mac or Linux machine opens on another (see src-tauri/src/cookies.rs).
-func osCryptKey(_ string) ([]byte, error) {
+// mint is only used on Windows, where a missing key has to be created.
+func osCryptKey(_ string, _ bool) ([]byte, error) {
 	pass, iter := "peanuts", 1
 	if runtime.GOOS == "darwin" {
 		pass, iter = "mock_password", 1003
