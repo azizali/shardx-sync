@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ShardX Sync</title>
 <link rel="stylesheet" href="styles.css">
 </head>
@@ -11,14 +12,12 @@
 <section id="view-setup" class="view center" hidden>
   <form id="setup-form" class="card form">
     <h1>Settings</h1>
-    <p class="muted">Both teammates use the same team passphrase. The Neon URLs are pre-filled for your team.</p>
     <label>Team passphrase <span class="hint" id="pass-hint"></span>
-      <input name="passphrase" type="password" autocomplete="new-password" placeholder="Shared secret that encrypts all profile data"></label>
-    <label>This computer's name<input name="machine" placeholder="e.g. Aziz MacBook"></label>
-    <label>ShardX data folder
-      <div class="row"><input name="shardxRoot" placeholder="Auto-detected"><button type="button" id="pick-folder" class="btn">Browse…</button></div>
-      <span class="hint" id="root-hint"></span></label>
-    <label class="check"><input type="checkbox" name="skipCaches" checked> Skip browser caches (faster, recommended)</label>
+      <input name="passphrase" type="password" autocomplete="new-password"></label>
+    <label>This computer<input name="machine" placeholder="e.g. Aziz MacBook"></label>
+    <label>ShardX data folder <span class="hint" id="root-hint"></span>
+      <div class="row"><input name="shardxRoot" placeholder="Auto-detected"><button type="button" id="pick-folder" class="btn">Browse…</button></div></label>
+    <label class="check"><input type="checkbox" name="skipCaches" checked> Skip browser caches</label>
     <details class="adv"><summary>Neon connection</summary>
       <label>Neon database URL<input name="neonUrl" placeholder="https://ep-xxx.c-6.us-east-2.aws.neon.tech/neondb"></label>
       <label>Storage function URL<input name="storageUrl" placeholder="https://br-xxx-shardxstorage.compute....neon.tech"></label>
@@ -35,8 +34,7 @@
 <section id="view-login" class="view center" hidden>
   <form id="login-form" class="card form narrow">
     <div class="logo">⇅</div>
-    <h1>ShardX Sync</h1>
-    <p class="muted">Sign in with your team account.</p>
+    <h1 class="tc">ShardX Sync</h1>
     <label>Email<input name="email" type="email" autocomplete="username" required></label>
     <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
     <button class="btn primary wide">Sign in</button>
@@ -47,13 +45,12 @@
     </div>
   </form>
   <form id="reset-form" class="card form narrow" hidden>
-    <h1>Set your password</h1>
-    <p class="muted">New team accounts start without a password. Enter your email, then the 6-digit code we send you.</p>
+    <h1>Set password</h1>
     <label>Email<input name="email" type="email" autocomplete="username" required></label>
     <button type="button" class="btn" id="reset-send">Email me a code</button>
     <label>Code<input name="otp" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code"></label>
     <label>New password<input name="password" type="password" autocomplete="new-password" minlength="8"></label>
-    <button class="btn primary wide">Save password and sign in</button>
+    <button class="btn primary wide">Save and sign in</button>
     <p class="err" id="reset-err"></p><p class="muted" id="reset-info"></p>
     <button type="button" class="link" id="reset-back">Back to sign in</button>
   </form>
@@ -63,33 +60,63 @@
 <section id="view-main" class="view" hidden>
   <header class="topbar">
     <div class="brand"><span class="logo sm">⇅</span> ShardX Sync</div>
-    <div class="who"><span id="who-machine"></span> · <span id="who-email"></span> <span class="chip" id="who-role" hidden></span></div>
+    <nav class="tabs">
+      <button class="tab on" data-tab="profiles">Profiles</button>
+      <button class="tab" data-tab="access" id="tab-access" hidden>Access</button>
+    </nav>
+    <div class="who"><span id="who-email"></span> <span class="tag" id="who-role" hidden></span> <span class="muted" id="who-machine"></span></div>
     <div class="actions">
-      <button class="btn" id="btn-access" hidden>Team access</button>
-      <button class="btn" id="btn-refresh" title="Refresh">Refresh</button>
-      <button class="btn" id="btn-settings">Settings</button>
-      <button class="btn ghost" id="btn-signout">Sign out</button>
+      <button class="btn sm ghost" id="btn-refresh">Refresh</button>
+      <button class="btn sm ghost" id="btn-settings">Settings</button>
+      <button class="btn sm ghost" id="btn-signout">Sign out</button>
     </div>
   </header>
-  <div class="banner" id="banner-launcher" hidden>ShardX Launcher is open. Quit it before downloading so it picks up the new profile when reopened.</div>
-  <div class="layout">
-    <aside class="list-pane">
-      <input id="search" class="search" placeholder="Search profiles">
-      <div id="list" class="list"></div>
-      <div class="list-foot muted" id="list-foot"></div>
-    </aside>
-    <main class="detail-pane" id="detail"><div class="empty muted">Select a profile</div></main>
+  <div class="banner" id="banner-launcher" hidden>ShardX Launcher is open. Quit it before downloading.</div>
+
+  <div class="body">
+    <section class="pane" id="pane-profiles">
+      <div class="toolbar">
+        <input id="search" class="search" placeholder="Search">
+        <select id="f-folder" class="sel"></select>
+        <select id="f-status" class="sel"></select>
+        <span class="muted count" id="count"></span>
+      </div>
+      <div class="bulk" id="bulk" hidden>
+        <span id="bulk-count"></span>
+        <button class="btn sm" data-bulk="push">Upload</button>
+        <button class="btn sm" data-bulk="pull">Download</button>
+        <button class="btn sm" data-bulk="take">Check out</button>
+        <button class="btn sm" data-bulk="release">Release</button>
+        <button class="btn sm danger" data-bulk="delete">Delete</button>
+        <button class="btn sm ghost" id="bulk-clear">Clear</button>
+      </div>
+      <div class="table-wrap">
+        <table class="t profiles">
+          <colgroup>
+            <col class="w-check"><col><col class="w-folder"><col class="w-status"><col class="w-cloud c-cloud">
+            <col class="w-size c-size"><col class="w-lock c-lock"><col class="w-access c-access"><col class="w-act">
+          </colgroup>
+          <thead><tr>
+            <th><input type="checkbox" id="check-all" title="Select all"></th>
+            <th>Name</th><th>Folder</th><th>Status</th><th class="c-cloud">Cloud</th><th class="c-size">Size</th>
+            <th class="c-lock">Checked out</th><th class="c-access">Access</th><th></th>
+          </tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="pane" id="pane-access" hidden>
+      <div class="access">
+        <div class="panel"><h3>Members</h3><div id="access-members"></div></div>
+        <div class="panel"><h3>Folder access</h3><div id="access-folders"></div></div>
+      </div>
+    </section>
+
+    <aside class="drawer" id="detail" hidden></aside>
   </div>
   <footer class="logbar"><div id="log" class="log"></div></footer>
 </section>
-
-<dialog id="dlg-access" class="dialog">
-  <div class="dhead"><h2>Team access</h2><span class="muted" style="flex:1"></span><button class="btn ghost" id="access-close">Close</button></div>
-  <div class="box"><h3>Members</h3><p>Admins see and manage every profile. Members see only what is shared with them.</p>
-    <div id="access-members"></div></div>
-  <div class="box"><h3>Folders</h3><p>A member who is checked for a folder can see every profile in it, including profiles added later.</p>
-    <div id="access-folders"></div></div>
-</dialog>
 
 <script src="api.js"></script>
 <script src="app.js"></script>

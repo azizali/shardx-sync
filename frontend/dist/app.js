@@ -1,31 +1,30 @@
 'use strict';
 const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const STATUS = {
-  'synced': 'In sync', 'local-changes': 'Changed here', 'cloud-newer': 'Newer in cloud', 'conflict': 'Changed on both',
-  'unlinked': 'Not linked yet', 'local-only': 'Not uploaded', 'cloud-only': 'Only in cloud',
+  'synced': 'Synced', 'local-changes': 'Changed here', 'cloud-newer': 'Newer in cloud', 'conflict': 'Conflict',
+  'unlinked': 'Not linked', 'local-only': 'Local only', 'cloud-only': 'Cloud only', 'deleted': 'Deleted',
 };
-const STATUS_HELP = {
-  'synced': 'This computer has the latest cloud version.',
-  'local-changes': 'You used this profile here since the last sync. Upload to share it.',
-  'cloud-newer': 'Your teammate uploaded a newer version. Download to get it.',
-  'conflict': 'Changed here and in the cloud. Pick which copy wins: upload yours or download theirs.',
-  'unlinked': 'Exists here and in the cloud but was never synced on this computer. Pick which copy wins.',
-  'local-only': 'Only on this computer. Upload to share it with your team.',
-  'cloud-only': 'Not on this computer yet. Download to add it to ShardX.',
+const UNFILED = '\u0000unfiled';
+let S = {
+  items: [], selected: null, picked: new Set(), busy: null, progress: null, state: null, launcherRunning: false,
+  role: '', team: null, folder: '', status: '',
 };
-let S = { items: [], selected: null, busy: null, progress: null, state: null, launcherRunning: false, role: '', team: null };
 const isAdmin = () => S.role === 'admin';
+const statusOf = (i) => (i.remote?.deleted ? 'deleted' : i.status);
+const byId = (id) => S.items.find((x) => x.id === id);
 
 function show(view) { for (const v of ['setup', 'login', 'main']) $(`#view-${v}`).hidden = v !== view; }
 function fmtBytes(n) { if (n == null) return '—'; const u = ['B', 'KB', 'MB', 'GB']; let i = 0; while (n >= 1024 && i < 3) { n /= 1024; i++; } return `${n.toFixed(i ? 1 : 0)} ${u[i]}`; }
 function ago(t) {
   if (!t) return 'never'; const s = (Date.now() - new Date(t).getTime()) / 1000;
-  if (s < 60) return 'just now'; if (s < 3600) return `${Math.floor(s / 60)} min ago`; if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
-  if (s < 86400 * 30) { const d = Math.floor(s / 86400); return `${d} day${d === 1 ? '' : 's'} ago`; } return new Date(t).toLocaleDateString();
+  if (s < 60) return 'just now'; if (s < 3600) return `${Math.floor(s / 60)}m ago`; if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  if (s < 86400 * 30) return `${Math.floor(s / 86400)}d ago`; return new Date(t).toLocaleDateString();
 }
-const when = (t) => (t ? new Date(t).toLocaleString() : '');
 const osName = (o) => ({ darwin: 'macOS', win32: 'Windows', linux: 'Linux' }[o] || o || '');
+const handle = (email) => String(email || '').split('@')[0];
+const initials = (email) => handle(email).slice(0, 2).toUpperCase();
 function log(msg, cls = '') { const d = document.createElement('div'); d.className = cls; d.textContent = `${new Date().toLocaleTimeString()}  ${msg}`; $('#log').prepend(d); }
 
 // ---------- boot ----------
@@ -39,7 +38,9 @@ async function boot() {
   S.role = S.state.role || '';
   $('#who-role').hidden = !S.role;
   $('#who-role').textContent = isAdmin() ? 'Admin' : 'Member';
-  $('#btn-access').hidden = !isAdmin();
+  $('#tab-access').hidden = !isAdmin();
+  document.body.classList.toggle('is-member', !isAdmin());
+  if (!isAdmin()) showTab('profiles');
   if (isAdmin()) loadTeam();
   refresh();
 }
@@ -50,9 +51,9 @@ function openSettings(cancelable = true) {
   f.neonUrl.value = c.neonUrl || ''; f.storageUrl.value = c.storageUrl || '';
   f.machine.value = c.machine || ''; f.shardxRoot.value = c.shardxRoot || ''; f.skipCaches.checked = c.skipCaches !== false;
   f.passphrase.value = '';
-  $('#pass-hint').textContent = c.hasPassphrase ? '(saved. Leave empty to keep it)' : '';
+  $('#pass-hint').textContent = c.hasPassphrase ? 'saved, leave empty to keep' : '';
   f.passphrase.required = !c.hasPassphrase;
-  $('#root-hint').textContent = c.shardxRootValid ? `Using ${c.shardxRootResolved}` : `Not found: ${c.shardxRootResolved}`;
+  $('#root-hint').textContent = c.shardxRootValid ? c.shardxRootResolved : `not found: ${c.shardxRootResolved}`;
   $('#setup-cancel').hidden = !cancelable;
   $('#setup-err').textContent = '';
   show('setup');
@@ -86,7 +87,7 @@ $('#reset-send').onclick = async () => {
   if (!f.email.value.trim()) { $('#reset-err').textContent = 'Enter your email first.'; return; }
   const r = await api.sendCode(f.email.value.trim());
   if (!r.ok) { $('#reset-err').textContent = r.error.message; return; }
-  $('#reset-info').textContent = 'If this email has a team account, a code is on its way. It expires in a few minutes.';
+  $('#reset-info').textContent = 'Code sent if the account exists.';
 };
 $('#reset-form').addEventListener('submit', async (e) => {
   e.preventDefault(); const f = e.target; $('#reset-err').textContent = '';
@@ -98,148 +99,231 @@ $('#reset-form').addEventListener('submit', async (e) => {
   if (!r.ok) { $('#reset-err').textContent = r.error.message; return; }
   boot();
 });
-$('#btn-signout').onclick = async () => { await api.signOut(); S.items = []; S.selected = null; S.role = ''; S.team = null; boot(); };
+$('#btn-signout').onclick = async () => {
+  await api.signOut(); S.items = []; S.selected = null; S.picked.clear(); S.role = ''; S.team = null; boot();
+};
 
-// ---------- team access (admins) ----------
-async function loadTeam() {
-  const r = await api.team();
-  if (r.ok) S.team = r.data; else log(r.error.message, 'bad');
-  renderAccess();
-  if (S.selected) renderDetail();
+// ---------- tabs ----------
+function showTab(tab) {
+  for (const t of $$('.tab')) t.classList.toggle('on', t.dataset.tab === tab);
+  $('#pane-profiles').hidden = tab !== 'profiles';
+  $('#pane-access').hidden = tab !== 'access';
+  if (tab === 'access') { S.selected = null; renderDetail(); loadTeam(); }
 }
-$('#btn-access').onclick = () => { $('#dlg-access').showModal(); loadTeam(); };
-$('#access-close').onclick = () => $('#dlg-access').close();
-function renderAccess() {
-  const t = S.team; if (!t || !$('#dlg-access').open) return;
-  const members = t.members;
-  $('#access-members').innerHTML = `<table class="tbl"><tr><th>Email</th><th>Role</th></tr>${members.map((m) => `<tr><td>${esc(m.email)}</td><td>
-    <select data-role-of="${esc(m.user_id)}"><option value="member" ${m.role === 'member' ? 'selected' : ''}>Member</option>
-    <option value="admin" ${m.role === 'admin' ? 'selected' : ''}>Admin</option></select></td></tr>`).join('')}</table>`;
-  const plain = members.filter((m) => m.role !== 'admin');
-  const folders = [...new Set([...S.items.map((i) => i.folder).filter(Boolean), ...Object.keys(t.grants.folders)])].sort();
-  $('#access-folders').innerHTML = !folders.length ? '<p class="muted">No folders yet.</p>' : `<table class="tbl"><tr><th>Folder</th>${plain.map((m) => `<th>${esc(m.email)}</th>`).join('')}</tr>
-    ${folders.map((f) => `<tr><td>${esc(f)}</td>${plain.map((m) => `<td><input type="checkbox" data-folder="${esc(f)}" data-user="${esc(m.user_id)}"
-      ${(t.grants.folders[f] || []).includes(m.user_id) ? 'checked' : ''}></td>`).join('')}</tr>`).join('')}</table>`;
-}
-$('#dlg-access').addEventListener('change', async (e) => {
-  const el = e.target;
-  if (el.dataset.roleOf) {
-    const r = await api.setMemberRole(el.dataset.roleOf, el.value);
-    if (!r.ok) alert(r.error.message);
-    return loadTeam();
-  }
-  if (el.dataset.folder) {
-    const f = el.dataset.folder; const current = new Set(S.team.grants.folders[f] || []);
-    el.checked ? current.add(el.dataset.user) : current.delete(el.dataset.user);
-    const r = await api.setFolderAccess(f, [...current]);
-    if (!r.ok) alert(r.error.message);
-    return loadTeam();
-  }
-});
+for (const t of $$('.tab')) t.onclick = () => showTab(t.dataset.tab);
 
-// ---------- list ----------
+// ---------- data ----------
 async function refresh() {
-  $('#list-foot').textContent = 'Loading…';
   const r = await api.list();
   if (!r.ok) {
-    $('#list-foot').textContent = '';
     log(r.error.message, 'bad');
     if (r.error.code === 'AUTH') return boot();
     if (r.error.code === 'PASSPHRASE' || r.error.code === 'SETUP') { alert(r.error.message); S.state = (await api.state()).data; return openSettings(true); }
     return;
   }
   S.items = r.data.items; S.launcherRunning = r.data.launcherRunning;
+  S.picked = new Set([...S.picked].filter(byId));
   $('#banner-launcher').hidden = !S.launcherRunning;
-  $('#list-foot').textContent = `${S.items.length} profiles · ${r.data.root}`;
-  renderList(); renderDetail();
+  $('#count').title = r.data.root;
+  renderAll();
 }
 $('#btn-refresh').onclick = refresh;
-$('#search').oninput = renderList;
 
-function renderList() {
-  const q = $('#search').value.toLowerCase();
-  const items = S.items.filter((i) => !q || i.name.toLowerCase().includes(q) || (i.folder || '').toLowerCase().includes(q));
-  $('#list').innerHTML = items.map((i) => {
-    const lock = i.remote?.lock ? (i.remote.lock.mine ? ' · checked out by you' : ` · in use by ${i.remote.lock.email}`) : '';
-    const sync = i.remote?.deleted ? 'deleted in cloud' : i.remote ? `synced ${ago(i.remote.updatedAt)}` : 'not in cloud';
-    return `<div class="item ${S.selected === i.id ? 'sel' : ''}" data-id="${esc(i.id)}">
-      <div class="name">${esc(i.name)}</div><span class="chip s-${i.status}">${STATUS[i.status]}</span>
-      <div class="sub">${i.folder ? esc(i.folder) + ' · ' : ''}${esc(sync)}${esc(lock)}${i.running ? ' · running' : ''}</div></div>`;
-  }).join('') || '<div class="muted" style="padding:12px">No profiles</div>';
-  for (const el of document.querySelectorAll('.item')) el.onclick = () => { S.selected = el.dataset.id; renderList(); renderDetail(); };
+async function loadTeam() {
+  if (!isAdmin()) return;
+  const r = await api.team();
+  if (r.ok) S.team = r.data; else log(r.error.message, 'bad');
+  renderAll();
 }
 
-// ---------- detail ----------
-function renderDetail() {
-  const i = S.items.find((x) => x.id === S.selected);
-  if (!i) { $('#detail').innerHTML = '<div class="empty muted">Select a profile</div>'; return; }
-  const r = i.remote; const lock = r?.lock; const busy = !!S.busy;
+function renderAll() { renderFilters(); renderTable(); renderDetail(); renderAccess(); }
+
+// ---------- profiles table ----------
+function renderFilters() {
+  const folders = [...new Set(S.items.map((i) => i.folder).filter(Boolean))].sort();
+  if (S.folder && S.folder !== UNFILED && !folders.includes(S.folder)) S.folder = '';
+  $('#f-folder').innerHTML = `<option value="">All folders</option>${folders.map((f) => `<option value="${esc(f)}">${esc(f)}</option>`).join('')}
+    <option value="${UNFILED}">Unfiled</option>`;
+  $('#f-folder').value = S.folder;
+  const present = new Set(S.items.map(statusOf));
+  $('#f-status').innerHTML = `<option value="">Any status</option>${Object.keys(STATUS).filter((k) => present.has(k) || k === S.status)
+    .map((k) => `<option value="${k}">${STATUS[k]}</option>`).join('')}`;
+  $('#f-status').value = S.status;
+}
+$('#f-folder').onchange = (e) => { S.folder = e.target.value; renderTable(); };
+$('#f-status').onchange = (e) => { S.status = e.target.value; renderTable(); };
+$('#search').oninput = () => renderTable();
+
+function visibleItems() {
+  const q = $('#search').value.trim().toLowerCase();
+  return S.items.filter((i) => (!q || i.name.toLowerCase().includes(q) || (i.folder || '').toLowerCase().includes(q))
+    && (!S.folder || (S.folder === UNFILED ? !i.folder : i.folder === S.folder))
+    && (!S.status || statusOf(i) === S.status));
+}
+
+function accessCell(i) {
+  if (!S.team) return '';
+  const emails = (S.team.grants.profiles[i.id] || []).map((u) => S.team.members.find((m) => m.user_id === u)?.email).filter(Boolean);
+  const viaFolder = i.folder ? (S.team.grants.folders[i.folder] || []).length : 0;
+  const title = [emails.length ? `Shared with ${emails.join(', ')}` : 'Not shared directly', viaFolder ? `+ ${viaFolder} via folder` : ''].filter(Boolean).join(' ');
+  const avatars = emails.slice(0, 3).map((e) => `<span class="av">${esc(initials(e))}</span>`).join('');
+  const more = emails.length > 3 ? `<span class="muted">+${emails.length - 3}</span>` : '';
+  const empty = !emails.length ? `<span class="muted">${viaFolder ? `folder · ${viaFolder}` : 'Share'}</span>` : '';
+  return `<button class="access-btn" data-open="${esc(i.id)}" title="${esc(title)}">${avatars}${more}${empty}</button>`;
+}
+
+function rowHtml(i) {
+  const r = i.remote; const lock = r?.lock; const busy = !!S.busy; const st = statusOf(i);
   const hasLocal = i.status !== 'cloud-only';
-  const lockHtml = !r ? '<span class="muted">Not in cloud yet</span>'
-    : !lock ? '<span class="dot"></span><span>Free. Nobody has it checked out.</span>'
-    : lock.mine ? `<span class="dot mine"></span><span>Checked out by you on this computer · ${esc(ago(lock.at))}</span>`
-    : `<span class="dot other"></span><span>In use by <b>${esc(lock.email)}</b> on ${esc(lock.machine)} · ${esc(ago(lock.at))}</span>`;
+  const pushOff = !hasLocal || r?.deleted || busy || i.running || (lock && !lock.mine);
+  const pullOff = !r || r.deleted || busy || i.running;
+  const cloud = !r ? '—' : r.deleted ? 'deleted' : `v${r.version} · ${ago(r.updatedAt)}`;
+  const cloudTitle = r && !r.deleted ? `v${r.version} by ${r.updatedBy} on ${r.updatedFrom} (${osName(r.updatedOs)})` : '';
+  const lockText = !lock ? '<span class="muted">—</span>' : lock.mine ? 'You' : esc(handle(lock.email));
+  return `<tr class="${S.selected === i.id ? 'sel' : ''}">
+    <td><input type="checkbox" class="pick" data-id="${esc(i.id)}" ${S.picked.has(i.id) ? 'checked' : ''}></td>
+    <td title="${esc(i.name)}"><span class="nm" data-open="${esc(i.id)}">${esc(i.name)}</span>${i.running ? ' <span class="tag">running</span>' : ''}</td>
+    <td title="${esc(i.folder || '')}">${i.folder ? esc(i.folder) : '<span class="muted">—</span>'}</td>
+    <td><span class="s-${st}"><i class="dot"></i></span>${STATUS[st]}</td>
+    <td class="c-cloud muted" title="${esc(cloudTitle)}">${esc(cloud)}</td>
+    <td class="c-size muted">${fmtBytes(hasLocal ? i.localBytes : r?.sizeBytes)}</td>
+    <td class="c-lock" title="${lock ? esc(`${lock.email} on ${lock.machine}`) : ''}">${lockText}</td>
+    <td class="c-access">${accessCell(i)}</td>
+    <td><div class="acts">
+      <button class="btn sm" data-push="${esc(i.id)}" ${pushOff ? 'disabled' : ''}>Upload</button>
+      <button class="btn sm" data-pull="${esc(i.id)}" ${pullOff ? 'disabled' : ''}>Download</button>
+    </div></td></tr>`;
+}
+
+function renderTable() {
+  const rows = visibleItems();
+  $('#count').textContent = rows.length === S.items.length ? `${S.items.length} profiles` : `${rows.length} of ${S.items.length}`;
+  $('#rows').innerHTML = rows.map(rowHtml).join('') || '<tr><td colspan="9" class="muted empty-cell">No profiles</td></tr>';
+  const picked = rows.filter((i) => S.picked.has(i.id)).length;
+  $('#check-all').checked = rows.length > 0 && picked === rows.length;
+  $('#check-all').indeterminate = picked > 0 && picked < rows.length;
+  $('#bulk').hidden = S.picked.size === 0;
+  $('#bulk-count').textContent = `${S.picked.size} selected`;
+  for (const b of $$('[data-bulk]')) b.disabled = !!S.busy;
+  $('[data-bulk="delete"]').textContent = isAdmin() ? 'Delete for good' : 'Delete';
+}
+
+$('#rows').addEventListener('change', (e) => {
+  const el = e.target; if (!el.classList.contains('pick')) return;
+  el.checked ? S.picked.add(el.dataset.id) : S.picked.delete(el.dataset.id);
+  renderTable();
+});
+$('#rows').addEventListener('click', (e) => {
+  const el = e.target.closest('[data-open],[data-push],[data-pull]'); if (!el) return;
+  if (el.dataset.open) { S.selected = el.dataset.open; renderTable(); renderDetail(); return; }
+  const i = byId(el.dataset.push || el.dataset.pull); if (!i) return;
+  if (el.dataset.push) doPush(i, { keepLock: !!i.remote?.lock?.mine });
+  else doPull(i, { takeLock: true });
+});
+$('#check-all').onchange = (e) => {
+  for (const i of visibleItems()) e.target.checked ? S.picked.add(i.id) : S.picked.delete(i.id);
+  renderTable();
+};
+$('#bulk-clear').onclick = () => { S.picked.clear(); renderTable(); };
+
+// ---------- bulk actions ----------
+const BULK = {
+  push: { label: 'Upload', fn: (i) => api.push(i.id, { keepLock: !!i.remote?.lock?.mine }) },
+  pull: { label: 'Download', fn: (i) => api.pull(i.id, { takeLock: true }) },
+  take: { label: 'Check out', fn: (i) => api.takeLock(i.id, false) },
+  release: { label: 'Release', fn: (i) => api.releaseLock(i.id, false) },
+  delete: { label: 'Delete', fn: (i) => api.deleteRemote(i.id) },
+};
+for (const b of $$('[data-bulk]')) b.onclick = () => bulk(b.dataset.bulk);
+async function bulk(kind) {
+  const items = [...S.picked].map(byId).filter(Boolean);
+  const n = items.length; if (!n) return;
+  if (kind === 'delete' && !confirm(isAdmin() ? `Delete ${n} profiles for good?` : `Delete ${n} profiles for the team? An admin can restore them.`)) return;
+  if (kind === 'pull' && S.launcherRunning && !confirm('ShardX Launcher is open. Continue?')) return;
+  const { label, fn } = BULK[kind];
+  S.busy = 'bulk'; renderAll();
+  let done = 0; const skipped = [];
+  for (const [k, i] of items.entries()) {
+    log(`${label} ${k + 1}/${n}: ${i.name}`);
+    const r = await fn(i);
+    if (r.ok) { done++; log(`${label}: ${i.name}. Done`, 'ok'); continue; }
+    // Anything that needs a decision (overwrite, take over a lock) is left for the row's own button.
+    if (r.error.code.startsWith('CONFIRM') || r.error.code === 'LOCKED') skipped.push(i.name);
+    log(`${label}: ${i.name}. ${r.error.message}`, 'bad');
+  }
+  S.busy = null; S.picked.clear();
+  log(`${label}: ${done} of ${n} done${skipped.length ? `, ${skipped.length} need a decision: ${skipped.join(', ')}` : ''}`, done === n ? 'ok' : 'bad');
+  await refresh();
+}
+
+// ---------- detail drawer ----------
+function renderDetail() {
+  const el = $('#detail'); const i = byId(S.selected);
+  el.hidden = !i;
+  if (!i) { el.innerHTML = ''; return; }
+  const r = i.remote; const lock = r?.lock; const busy = !!S.busy; const st = statusOf(i);
+  const hasLocal = i.status !== 'cloud-only';
   const p = S.progress && S.progress.id === i.id ? S.progress : null;
-  $('#detail').innerHTML = `
-    <div class="dhead"><h2>${esc(i.name)}</h2><span class="chip s-${i.status}">${STATUS[i.status]}</span></div>
-    <div class="dsub">${esc(STATUS_HELP[i.status])}</div>
+  const lockText = !r ? '—' : !lock ? 'Free'
+    : lock.mine ? `You · ${esc(ago(lock.at))}` : `${esc(lock.email)} on ${esc(lock.machine)} · ${esc(ago(lock.at))}`;
+  el.innerHTML = `
+    <div class="dhead"><div><h2 title="${esc(i.name)}">${esc(i.name)}</h2>
+      <div class="muted">${i.folder ? esc(i.folder) : 'Unfiled'} · <span class="s-${st}"><i class="dot"></i>${STATUS[st]}</span></div></div>
+      <button class="btn sm ghost" id="d-close">Close</button></div>
     ${p ? `<div class="progress"><div class="bar"><i style="width:${p.pct ?? 0}%"></i></div><div class="ptext">${esc(p.step)}${p.detail ? ' · ' + esc(p.detail) : ''}</div></div>` : ''}
-    ${i.running ? '<p class="warn">This profile is open in ShardX right now. Close its browser window before syncing.</p>' : ''}
-    ${r?.deleted ? `<p class="warn">Deleted in the cloud${isAdmin() ? '. Restore it to bring it back for the team, or delete it for good.' : '. An admin can restore it.'}</p>` : ''}
-    <div class="grid">
-      <div class="stat"><div class="k">Last sync (cloud)</div><div class="v">${r ? esc(ago(r.updatedAt)) : 'Never'}</div>
-        <div class="v2">${r ? `v${r.version} by ${esc(r.updatedBy)} on ${esc(r.updatedFrom)} (${esc(osName(r.updatedOs))})<br>${esc(when(r.updatedAt))}` : ''}</div></div>
-      <div class="stat"><div class="k">Last sync on this computer</div><div class="v">${esc(ago(i.lastSyncedHere))}</div>
-        <div class="v2">${i.localVersion ? `Has v${i.localVersion}` : ''}${i.lastSyncedHere ? ' · ' + esc(when(i.lastSyncedHere)) : ''}</div></div>
-      <div class="stat"><div class="k">Size</div><div class="v">${hasLocal ? fmtBytes(i.localBytes) : '—'} <span class="muted" style="font-size:12px">on disk</span></div>
-        <div class="v2">${r ? fmtBytes(r.sizeBytes) + ' compressed in cloud' : ''}</div></div>
-      <div class="stat"><div class="k">Last opened here</div><div class="v">${hasLocal ? esc(ago(i.lastLaunchedAt)) : '—'}</div><div class="v2">${esc(i.folder || '')}</div></div>
-    </div>
-    <div class="box"><h3>Upload to cloud</h3><p>Sends everything in this profile from this computer: fingerprint, cookies, logins, bookmarks, history, extensions, storage and proxy.${lock && !lock.mine ? ' <b>Blocked while your teammate has it checked out.</b>' : ''}</p>
-      <div class="row"><button class="btn primary" id="a-push" ${!hasLocal || busy || i.running || (lock && !lock.mine) ? 'disabled' : ''}>Upload</button>
-      <label class="check"><input type="checkbox" id="a-keep" ${lock?.mine ? 'checked' : ''}> Keep it checked out to me</label></div></div>
-    <div class="box"><h3>Download from cloud</h3><p>Replaces this computer's copy with the cloud version. Your current copy is backed up first.</p>
-      <div class="row"><button class="btn primary" id="a-pull" ${!r || busy || i.running ? 'disabled' : ''}>Download</button>
-      <label class="check"><input type="checkbox" id="a-lock" checked> Check it out to me so my teammate knows I'm using it</label></div></div>
-    <div class="box"><h3>Check-out lock</h3><div class="lock" style="margin-bottom:12px">${lockHtml}</div>
+    ${i.running ? '<p class="warn">Open in ShardX. Close it to sync.</p>' : ''}
+    ${r?.deleted ? '<p class="warn">Deleted in the cloud.</p>' : ''}
+    <dl class="kv">
+      <dt>Cloud</dt><dd>${r ? `v${r.version} · ${esc(ago(r.updatedAt))} · ${esc(handle(r.updatedBy))} on ${esc(r.updatedFrom)} (${esc(osName(r.updatedOs))})` : 'Not uploaded'}</dd>
+      <dt>This computer</dt><dd>${hasLocal ? `${i.localVersion ? `v${i.localVersion}` : 'Not synced'}${i.lastSyncedHere ? ` · ${esc(ago(i.lastSyncedHere))}` : ''}` : 'Not here'}</dd>
+      <dt>Size</dt><dd>${hasLocal ? fmtBytes(i.localBytes) : '—'} here · ${r ? fmtBytes(r.sizeBytes) : '—'} cloud</dd>
+      <dt>Last opened</dt><dd>${hasLocal ? esc(ago(i.lastLaunchedAt)) : '—'}</dd>
+      <dt>Checked out</dt><dd>${lockText}</dd>
+    </dl>
+    <div class="sec">
+      <div class="row"><button class="btn sm primary" id="a-push" ${!hasLocal || r?.deleted || busy || i.running || (lock && !lock.mine) ? 'disabled' : ''}>Upload</button>
+        <label class="check"><input type="checkbox" id="a-keep" ${lock?.mine ? 'checked' : ''}> Keep checked out</label></div>
+      <div class="row"><button class="btn sm primary" id="a-pull" ${!r || r.deleted || busy || i.running ? 'disabled' : ''}>Download</button>
+        <label class="check"><input type="checkbox" id="a-lock" checked> Check out to me</label></div>
       <div class="row">
-        ${r && !lock ? `<button class="btn" id="a-take" ${busy ? 'disabled' : ''}>Check out to me</button>` : ''}
-        ${lock?.mine ? `<button class="btn" id="a-release" ${busy ? 'disabled' : ''}>Release without uploading</button>` : ''}
-        ${lock && !lock.mine ? `<button class="btn danger" id="a-force" ${busy ? 'disabled' : ''}>Force unlock</button>` : ''}
-      </div></div>
-    <div class="row" style="margin-top:20px">
-      <button class="btn ghost" id="a-backups">Open backups folder</button>
-      <button class="btn ghost" id="a-shardx">Open ShardX folder</button>
-      ${r && r.deleted && isAdmin() ? `<button class="btn primary" id="a-restore" ${busy ? 'disabled' : ''}>Restore</button>` : ''}
-      ${r && !r.deleted ? `<button class="btn danger" id="a-delete" ${busy ? 'disabled' : ''}>${isAdmin() ? 'Delete for good' : 'Delete'}</button>` : ''}
+        ${r && !r.deleted && !lock ? `<button class="btn sm" id="a-take" ${busy ? 'disabled' : ''}>Check out</button>` : ''}
+        ${lock?.mine ? `<button class="btn sm" id="a-release" ${busy ? 'disabled' : ''}>Release</button>` : ''}
+        ${lock && !lock.mine ? `<button class="btn sm danger" id="a-force" ${busy ? 'disabled' : ''}>Force unlock</button>` : ''}
+        ${r?.deleted && isAdmin() ? `<button class="btn sm primary" id="a-restore" ${busy ? 'disabled' : ''}>Restore</button>` : ''}
+        ${r && (!r.deleted || isAdmin()) ? `<button class="btn sm danger" id="a-delete" ${busy || (r.deleted && !isAdmin()) ? 'disabled' : ''}>${isAdmin() ? 'Delete for good' : 'Delete'}</button>` : ''}
+      </div>
     </div>
-    ${isAdmin() && r && !r.deleted && S.team ? profileAccessBox(i) : ''}`;
-  const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+    ${isAdmin() && r && !r.deleted && S.team ? accessSection(i) : ''}
+    <div class="foot"><button class="link" id="a-backups">Backups folder</button><button class="link" id="a-shardx">ShardX folder</button></div>`;
+  const on = (id, fn) => { const b = $(id); if (b) b.onclick = fn; };
+  on('#d-close', () => { S.selected = null; renderDetail(); renderTable(); });
   on('#a-push', () => doPush(i, { keepLock: $('#a-keep').checked }));
   on('#a-pull', () => doPull(i, { takeLock: $('#a-lock').checked }));
   on('#a-take', () => run(i, 'Check out', () => api.takeLock(i.id, false)));
   on('#a-release', () => run(i, 'Release lock', () => api.releaseLock(i.id, false)));
-  on('#a-force', () => confirm(`Force unlock "${i.name}"?\n\n${lock.email} may still be using it. If they upload later, their upload will be blocked until they download again.`)
+  on('#a-force', () => confirm(`Force unlock "${i.name}"? ${lock.email} may still be using it.`)
     && run(i, 'Force unlock', () => api.releaseLock(i.id, true)));
   on('#a-delete', () => (isAdmin()
-    ? confirm(`Delete "${i.name}" for good?\n\nIts cloud copy and every version are removed. The copy on this computer stays.`)
-    : confirm(`Delete "${i.name}" for the team?\n\nIt disappears from everyone's list. An admin can restore it.`))
+    ? confirm(`Delete "${i.name}" for good? The copy on this computer stays.`)
+    : confirm(`Delete "${i.name}" for the team? An admin can restore it.`))
     && run(i, 'Delete', () => api.deleteRemote(i.id)));
   on('#a-restore', () => run(i, 'Restore', () => api.restoreRemote(i.id)));
   on('#a-backups', () => api.openBackups());
   on('#a-shardx', () => api.openShardx());
 }
 
-// Admins choose which members can open this one profile. Folder access also applies, and is shown beside it.
-function profileAccessBox(i) {
+// Admins tick which members can open this profile. Folder access is shown under it, read-only.
+function accessSection(i) {
   const direct = S.team.grants.profiles[i.id] || [];
   const plain = S.team.members.filter((m) => m.role !== 'admin');
-  return `<div class="box"><h3>Who can see this profile</h3><p>Admins always see it${i.folder ? `. Members of the folder “${esc(i.folder)}” see it too` : ''}.</p>
-    ${plain.map((m) => `<label class="check"><input type="checkbox" data-profile-user="${esc(m.user_id)}" ${direct.includes(m.user_id) ? 'checked' : ''}> ${esc(m.email)}</label>`).join('') || '<span class="muted">No members yet</span>'}
-  </div>`;
+  const viaFolder = i.folder ? (S.team.grants.folders[i.folder] || []) : [];
+  return `<div class="sec"><h3>Access</h3><div class="checks">
+    ${plain.map((m) => `<label class="check"><input type="checkbox" data-profile-user="${esc(m.user_id)}" ${direct.includes(m.user_id) ? 'checked' : ''}>
+      ${esc(m.email)}${viaFolder.includes(m.user_id) ? ' <span class="tag">via folder</span>' : ''}</label>`).join('') || '<span class="muted">No members yet</span>'}
+  </div></div>`;
 }
 $('#detail').addEventListener('change', async (e) => {
-  const el = e.target; const i = S.items.find((x) => x.id === S.selected);
+  const el = e.target; const i = byId(S.selected);
   if (!el.dataset.profileUser || !i) return;
   const current = new Set(S.team.grants.profiles[i.id] || []);
   el.checked ? current.add(el.dataset.profileUser) : current.delete(el.dataset.profileUser);
@@ -248,8 +332,49 @@ $('#detail').addEventListener('change', async (e) => {
   loadTeam();
 });
 
+// ---------- access tab (admins) ----------
+function renderAccess() {
+  const t = S.team; if (!t || !isAdmin()) return;
+  const counts = (uid) => Object.values(t.grants.profiles).filter((a) => a.includes(uid)).length;
+  const foldersOf = (uid) => Object.keys(t.grants.folders).filter((f) => t.grants.folders[f].includes(uid)).length;
+  $('#access-members').innerHTML = `<table class="t"><colgroup><col><col style="width:104px"><col style="width:64px"><col style="width:64px"></colgroup>
+    <thead><tr><th>Member</th><th>Role</th><th class="num">Profiles</th><th class="num">Folders</th></tr></thead><tbody>
+    ${t.members.map((m) => `<tr><td title="${esc(m.email)}">${esc(m.email)}</td>
+      <td class="fit"><select class="sel" data-role-of="${esc(m.user_id)}"><option value="member" ${m.role === 'member' ? 'selected' : ''}>Member</option>
+        <option value="admin" ${m.role === 'admin' ? 'selected' : ''}>Admin</option></select></td>
+      <td class="num muted">${m.role === 'admin' ? 'all' : counts(m.user_id)}</td><td class="num muted">${m.role === 'admin' ? 'all' : foldersOf(m.user_id)}</td></tr>`).join('')
+      || '<tr><td colspan="4" class="muted empty-cell">Nobody has signed in yet</td></tr>'}
+    </tbody></table>`;
+  const plain = t.members.filter((m) => m.role !== 'admin');
+  const folders = [...new Set([...S.items.map((i) => i.folder).filter(Boolean), ...Object.keys(t.grants.folders)])].sort();
+  $('#access-folders').innerHTML = !folders.length ? '<p class="muted">No folders yet.</p>' : folders.map((f) => {
+    const granted = new Set(t.grants.folders[f] || []);
+    const n = S.items.filter((i) => i.folder === f).length;
+    return `<div class="frow"><div class="fname" title="${esc(f)}">${esc(f)} <span class="muted">${n}</span></div><div class="tgs">
+      ${plain.map((m) => `<button class="tg ${granted.has(m.user_id) ? 'on' : ''}" title="${esc(m.email)}" data-folder="${esc(f)}" data-user="${esc(m.user_id)}">${esc(handle(m.email))}</button>`).join('')
+        || '<span class="muted">No members</span>'}
+    </div></div>`;
+  }).join('');
+}
+$('#pane-access').addEventListener('change', async (e) => {
+  const el = e.target; if (!el.dataset.roleOf) return;
+  const r = await api.setMemberRole(el.dataset.roleOf, el.value);
+  if (!r.ok) alert(r.error.message);
+  loadTeam();
+});
+$('#pane-access').addEventListener('click', async (e) => {
+  const el = e.target.closest('.tg'); if (!el) return;
+  const f = el.dataset.folder; const current = new Set(S.team.grants.folders[f] || []);
+  current.has(el.dataset.user) ? current.delete(el.dataset.user) : current.add(el.dataset.user);
+  el.classList.toggle('on');
+  const r = await api.setFolderAccess(f, [...current]);
+  if (!r.ok) alert(r.error.message);
+  loadTeam();
+});
+
+// ---------- single-profile actions ----------
 async function run(i, label, fn) {
-  S.busy = i.id; S.progress = { id: i.id, step: label, pct: 0 }; renderDetail();
+  S.busy = i.id; S.progress = { id: i.id, step: label, pct: 0 }; renderTable(); renderDetail();
   const r = await fn();
   S.busy = null;
   if (r.ok) log(`${label}: ${i.name}. Done`, 'ok'); else log(`${label}: ${i.name}. ${r.error.message}`, 'bad');
@@ -272,15 +397,17 @@ async function doPull(i, opts) {
   for (let tries = 0; tries < 3; tries++) {
     const r = await run(i, 'Download', () => api.pull(i.id, o));
     if (r.ok) {
-      if (r.data.crossOs) alert(`Downloaded. This copy was uploaded from ${osName(r.data.fromOs)}. Fingerprint, bookmarks, history and storage carry over, but saved cookies and passwords may not decrypt on a different OS, so some sites may ask you to log in again.`);
+      if (r.data.crossOs) alert(`Downloaded from ${osName(r.data.fromOs)}. Saved passwords may not carry across operating systems.`);
       return;
     }
     if (r.error.code === 'CONFIRM_OVERWRITE_LOCAL' && confirm(`${r.error.message}\n\nDownload and replace?`)) { o.overwriteLocal = true; continue; }
-    if (r.error.code === 'LOCKED' && confirm(`${r.error.message}\n\nTake it over anyway? Only do this if they are not using it.`)) { o.forceLock = true; continue; }
+    if (r.error.code === 'LOCKED' && confirm(`${r.error.message}\n\nTake it over anyway?`)) { o.forceLock = true; continue; }
     if (!r.error.code.startsWith('CONFIRM') && r.error.code !== 'LOCKED') alert(r.error.message);
     return;
   }
 }
+
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.selected) { S.selected = null; renderDetail(); renderTable(); } });
 
 apiReady.then(() => {
   api.onProgress((p) => { S.progress = p; if (p.id === S.selected) renderDetail(); });
