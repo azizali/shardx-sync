@@ -30,6 +30,19 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # setup-go caches downloaded modules, not compiled packages. Cache the build cache too,
+      # so the large pure-Go sqlite driver is not recompiled on every run.
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/Library/Caches/go-build
+            ~/AppData/Local/go-build
+          key: go-build-${{ runner.os }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            go-build-${{ runner.os }}-
+
       - name: Version
         id: v
         run: |
