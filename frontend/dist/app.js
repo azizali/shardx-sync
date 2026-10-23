@@ -25,6 +25,25 @@ function ago(t) {
 const osName = (o) => ({ darwin: 'macOS', win32: 'Windows', linux: 'Linux' }[o] || o || '');
 const handle = (email) => String(email || '').split('@')[0];
 const initials = (email) => handle(email).slice(0, 2).toUpperCase();
+// The Wails macOS webview does not implement window.confirm or window.alert: confirm returns false at once
+// and alert shows nothing. These show the app's own dialog instead.
+function dialog(message, cancelable) {
+  return new Promise((resolve) => {
+    const ok = $('#modal-ok'); const cancel = $('#modal-cancel');
+    $('#modal-msg').textContent = message;
+    cancel.hidden = !cancelable;
+    $('#modal').hidden = false; ok.focus();
+    const done = (v) => { $('#modal').hidden = true; document.removeEventListener('keydown', key, true); resolve(v); };
+    const key = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(false); }
+      if (e.key === 'Enter') { e.preventDefault(); done(true); }
+    };
+    ok.onclick = () => done(true); cancel.onclick = () => done(false);
+    document.addEventListener('keydown', key, true);
+  });
+}
+const ask = (message) => dialog(message, true);
+const tell = (message) => dialog(message, false);
 function log(msg, cls = '') { const d = document.createElement('div'); d.className = cls; d.textContent = `${new Date().toLocaleTimeString()}  ${msg}`; $('#log').prepend(d); }
 
 // ---------- boot ----------
@@ -118,7 +137,7 @@ async function refresh() {
   if (!r.ok) {
     log(r.error.message, 'bad');
     if (r.error.code === 'AUTH') return boot();
-    if (r.error.code === 'PASSPHRASE' || r.error.code === 'SETUP') { alert(r.error.message); S.state = (await api.state()).data; return openSettings(true); }
+    if (r.error.code === 'PASSPHRASE' || r.error.code === 'SETUP') { tell(r.error.message); S.state = (await api.state()).data; return openSettings(true); }
     return;
   }
   S.items = r.data.items; S.launcherRunning = r.data.launcherRunning;
@@ -238,8 +257,8 @@ for (const b of $$('[data-bulk]')) b.onclick = () => bulk(b.dataset.bulk);
 async function bulk(kind) {
   const items = [...S.picked].map(byId).filter(Boolean);
   const n = items.length; if (!n) return;
-  if (kind === 'delete' && !confirm(isAdmin() ? `Delete ${n} profiles for good?` : `Delete ${n} profiles for the team? An admin can restore them.`)) return;
-  if (kind === 'pull' && S.launcherRunning && !confirm('ShardX Launcher is open. Continue?')) return;
+  if (kind === 'delete' && !await ask(isAdmin() ? `Delete ${n} profiles for good?` : `Delete ${n} profiles for the team? An admin can restore them.`)) return;
+  if (kind === 'pull' && S.launcherRunning && !await ask('ShardX Launcher is open. Continue?')) return;
   const { label, fn } = BULK[kind];
   S.busy = 'bulk'; renderAll();
   let done = 0; const skipped = [];
@@ -301,11 +320,11 @@ function renderDetail() {
   on('#a-pull', () => doPull(i, { takeLock: $('#a-lock').checked }));
   on('#a-take', () => run(i, 'Check out', () => api.takeLock(i.id, false)));
   on('#a-release', () => run(i, 'Release lock', () => api.releaseLock(i.id, false)));
-  on('#a-force', () => confirm(`Force unlock "${i.name}"? ${lock.email} may still be using it.`)
+  on('#a-force', async () => await ask(`Force unlock "${i.name}"? ${lock.email} may still be using it.`)
     && run(i, 'Force unlock', () => api.releaseLock(i.id, true)));
-  on('#a-delete', () => (isAdmin()
-    ? confirm(`Delete "${i.name}" for good? The copy on this computer stays.`)
-    : confirm(`Delete "${i.name}" for the team? An admin can restore it.`))
+  on('#a-delete', async () => (isAdmin()
+    ? await ask(`Delete "${i.name}" for good? The copy on this computer stays.`)
+    : await ask(`Delete "${i.name}" for the team? An admin can restore it.`))
     && run(i, 'Delete', () => api.deleteRemote(i.id)));
   on('#a-restore', () => run(i, 'Restore', () => api.restoreRemote(i.id)));
   on('#a-backups', () => api.openBackups());
@@ -328,7 +347,7 @@ $('#detail').addEventListener('change', async (e) => {
   const current = new Set(S.team.grants.profiles[i.id] || []);
   el.checked ? current.add(el.dataset.profileUser) : current.delete(el.dataset.profileUser);
   const r = await api.setProfileAccess(i.id, [...current]);
-  if (!r.ok) alert(r.error.message);
+  if (!r.ok) tell(r.error.message);
   loadTeam();
 });
 
@@ -359,7 +378,7 @@ function renderAccess() {
 $('#pane-access').addEventListener('change', async (e) => {
   const el = e.target; if (!el.dataset.roleOf) return;
   const r = await api.setMemberRole(el.dataset.roleOf, el.value);
-  if (!r.ok) alert(r.error.message);
+  if (!r.ok) tell(r.error.message);
   loadTeam();
 });
 $('#pane-access').addEventListener('click', async (e) => {
@@ -368,7 +387,7 @@ $('#pane-access').addEventListener('click', async (e) => {
   current.has(el.dataset.user) ? current.delete(el.dataset.user) : current.add(el.dataset.user);
   el.classList.toggle('on');
   const r = await api.setFolderAccess(f, [...current]);
-  if (!r.ok) alert(r.error.message);
+  if (!r.ok) tell(r.error.message);
   loadTeam();
 });
 
@@ -385,24 +404,24 @@ async function run(i, label, fn) {
 
 async function doPush(i, opts) {
   let r = await run(i, 'Upload', () => api.push(i.id, opts));
-  if (!r.ok && r.error.code === 'CONFIRM_OVERWRITE_CLOUD' && confirm(`${r.error.message}\n\nUpload anyway and replace the cloud copy?`)) {
+  if (!r.ok && r.error.code === 'CONFIRM_OVERWRITE_CLOUD' && await ask(`${r.error.message}\n\nUpload anyway and replace the cloud copy?`)) {
     r = await run(i, 'Upload', () => api.push(i.id, { ...opts, overwrite: true }));
   }
-  if (!r.ok && !r.error.code.startsWith('CONFIRM')) alert(r.error.message);
+  if (!r.ok && !r.error.code.startsWith('CONFIRM')) tell(r.error.message);
 }
 
 async function doPull(i, opts) {
-  if (S.launcherRunning && !confirm('ShardX Launcher is open. It may not see the downloaded profile until you restart it.\n\nContinue?')) return;
+  if (S.launcherRunning && !await ask('ShardX Launcher is open. It may not see the downloaded profile until you restart it.\n\nContinue?')) return;
   let o = { ...opts };
   for (let tries = 0; tries < 3; tries++) {
     const r = await run(i, 'Download', () => api.pull(i.id, o));
     if (r.ok) {
-      if (r.data.crossOs) alert(`Downloaded from ${osName(r.data.fromOs)}. Saved passwords may not carry across operating systems.`);
+      if (r.data.crossOs) tell(`Downloaded from ${osName(r.data.fromOs)}. Saved passwords may not carry across operating systems.`);
       return;
     }
-    if (r.error.code === 'CONFIRM_OVERWRITE_LOCAL' && confirm(`${r.error.message}\n\nDownload and replace?`)) { o.overwriteLocal = true; continue; }
-    if (r.error.code === 'LOCKED' && confirm(`${r.error.message}\n\nTake it over anyway?`)) { o.forceLock = true; continue; }
-    if (!r.error.code.startsWith('CONFIRM') && r.error.code !== 'LOCKED') alert(r.error.message);
+    if (r.error.code === 'CONFIRM_OVERWRITE_LOCAL' && await ask(`${r.error.message}\n\nDownload and replace?`)) { o.overwriteLocal = true; continue; }
+    if (r.error.code === 'LOCKED' && await ask(`${r.error.message}\n\nTake it over anyway?`)) { o.forceLock = true; continue; }
+    if (!r.error.code.startsWith('CONFIRM') && r.error.code !== 'LOCKED') tell(r.error.message);
     return;
   }
 }

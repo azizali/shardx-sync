@@ -114,3 +114,8 @@ details.adv summary { color: var(--muted); cursor: pointer; font-size: 12px; mar
 .logbar { border-top: 1px solid var(--line); background: var(--panel); max-height: 64px; overflow: auto; }
 .log { padding: 4px 12px; font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
 .log .ok { color: var(--green); } .log .bad { color: var(--red); }
+
+/* dialog */
+.modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .55); display: grid; place-items: center; z-index: 50; padding: 16px; }
+.modal-box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; width: min(400px, 100%); box-shadow: 0 16px 48px rgba(0, 0, 0, .5); }
+.modal-box p { margin: 0 0 14px; white-space: pre-wrap; line-height: 1.45; }
