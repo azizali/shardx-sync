@@ -9,8 +9,9 @@ const STATUS = {
 const UNFILED = '\u0000unfiled';
 let S = {
   items: [], selected: null, picked: new Set(), busy: null, progress: null, state: null, launcherRunning: false,
-  role: '', team: null, folder: '', status: '',
+  role: '', team: null, folder: '', status: '', sort: { key: 'name', dir: 1 },
 };
+try { S.sort = { ...S.sort, ...JSON.parse(localStorage.getItem('sort') || '{}') }; } catch { /* storage unavailable */ }
 const isAdmin = () => S.role === 'admin';
 const statusOf = (i) => (i.remote?.deleted ? 'deleted' : i.status);
 const byId = (id) => S.items.find((x) => x.id === id);
@@ -173,12 +174,38 @@ $('#f-folder').onchange = (e) => { S.folder = e.target.value; renderTable(); };
 $('#f-status').onchange = (e) => { S.status = e.target.value; renderTable(); };
 $('#search').oninput = () => renderTable();
 
+// Sort values per column. null means "no value" and always sorts last, whichever way the column is sorted.
+const STATUS_ORDER = Object.keys(STATUS);
+const SORT = {
+  name: (i) => i.name.toLowerCase(),
+  folder: (i) => (i.folder ? i.folder.toLowerCase() : null),
+  status: (i) => STATUS_ORDER.indexOf(statusOf(i)),
+  cloud: (i) => (i.remote?.updatedAt ? new Date(i.remote.updatedAt).getTime() : null),
+  size: (i) => (i.status !== 'cloud-only' ? i.localBytes : i.remote?.sizeBytes) ?? null,
+  lock: (i) => (i.remote?.lock ? (i.remote.lock.mine ? '' : i.remote.lock.email.toLowerCase()) : null),
+};
+
 function visibleItems() {
   const q = $('#search').value.trim().toLowerCase();
-  return S.items.filter((i) => (!q || i.name.toLowerCase().includes(q) || (i.folder || '').toLowerCase().includes(q))
+  const rows = S.items.filter((i) => (!q || i.name.toLowerCase().includes(q) || (i.folder || '').toLowerCase().includes(q))
     && (!S.folder || (S.folder === UNFILED ? !i.folder : i.folder === S.folder))
     && (!S.status || statusOf(i) === S.status));
+  const val = SORT[S.sort.key] || SORT.name; const dir = S.sort.dir;
+  return rows.sort((a, b) => {
+    const x = val(a); const y = val(b);
+    if (x === null || y === null) { if (x !== y) return x === null ? 1 : -1; }
+    else if (x !== y) return (x < y ? -1 : 1) * dir;
+    return SORT.name(a) < SORT.name(b) ? -1 : SORT.name(a) > SORT.name(b) ? 1 : 0;
+  });
 }
+
+$('.profiles thead').addEventListener('click', (e) => {
+  const th = e.target.closest('th[data-sort]'); if (!th) return;
+  const key = th.dataset.sort;
+  S.sort = S.sort.key === key ? { key, dir: -S.sort.dir } : { key, dir: key === 'cloud' || key === 'size' ? -1 : 1 };
+  try { localStorage.setItem('sort', JSON.stringify(S.sort)); } catch { /* storage unavailable */ }
+  renderTable();
+});
 
 function accessCell(i) {
   if (!S.team) return '';
@@ -225,6 +252,10 @@ function renderTable() {
   $('#bulk-count').textContent = `${S.picked.size} selected`;
   for (const b of $$('[data-bulk]')) b.disabled = !!S.busy;
   $('[data-bulk="delete"]').textContent = isAdmin() ? 'Delete for good' : 'Delete';
+  for (const th of $$('th[data-sort]')) {
+    const on = th.dataset.sort === S.sort.key;
+    th.classList.toggle('asc', on && S.sort.dir === 1); th.classList.toggle('desc', on && S.sort.dir === -1);
+  }
 }
 
 $('#rows').addEventListener('change', (e) => {

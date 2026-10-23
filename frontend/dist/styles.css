@@ -65,6 +65,8 @@ details.adv summary { color: var(--muted); cursor: pointer; font-size: 12px; mar
 .t td { padding: 0 8px; height: 36px; border-bottom: 1px solid var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t tbody tr:hover { background: var(--panel); } .t tbody tr.sel { background: var(--panel2); }
 .t .num { text-align: right; }
+.t th[data-sort] { cursor: pointer; user-select: none; } .t th[data-sort]:hover, .t th.asc, .t th.desc { color: var(--text); }
+.t th.asc::after { content: " \2191"; } .t th.desc::after { content: " \2193"; }
 .t th:first-child, .t td:first-child { padding: 0 6px; text-overflow: clip; }
 .t select { width: 100%; }
 .t td.fit { text-overflow: clip; }
