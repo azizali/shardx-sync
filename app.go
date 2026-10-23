@@ -69,7 +69,6 @@ type App struct {
 	secrets *secretStore
 
 	mu     sync.Mutex
-	busy   bool
 	cloud  *core.Cloud
 	engine *core.Engine
 }
@@ -89,9 +88,9 @@ func (a *App) startup(ctx context.Context) {
 // beforeClose keeps the window open while a sync is running unless the user insists.
 func (a *App) beforeClose(ctx context.Context) bool {
 	a.mu.Lock()
-	busy := a.busy
+	e := a.engine
 	a.mu.Unlock()
-	if !busy {
+	if e == nil || e.Busy() == 0 {
 		return false
 	}
 	choice, _ := wruntime.MessageDialog(ctx, wruntime.MessageDialogOptions{
@@ -182,21 +181,14 @@ func (a *App) getEngine() (*core.Engine, error) {
 	return e, nil
 }
 
-// exclusive runs one sync operation at a time.
-func (a *App) exclusive(fn func() (any, error)) Result {
-	a.mu.Lock()
-	if a.busy {
-		a.mu.Unlock()
-		return result(nil, core.Errf("BUSY", "Another sync is running. Please wait."))
+// withEngine runs one engine call. Wails runs each bound call on its own goroutine, so different profiles
+// sync in parallel; the engine itself keeps two operations on one profile apart.
+func (a *App) withEngine(fn func(e *core.Engine) (any, error)) Result {
+	e, err := a.getEngine()
+	if err != nil {
+		return result(nil, err)
 	}
-	a.busy = true
-	a.mu.Unlock()
-	defer func() {
-		a.mu.Lock()
-		a.busy = false
-		a.mu.Unlock()
-	}()
-	return result(fn())
+	return result(fn(e))
 }
 
 // ---------- methods bound to the UI ----------
@@ -347,21 +339,9 @@ func (a *App) List() Result {
 	return result(out, nil)
 }
 
-// enforce deletes local copies of profiles the user may no longer have. It skips a turn while a sync runs,
-// so it never deletes a profile in the middle of a download.
+// enforce deletes local copies of profiles the user may no longer have. A profile that is syncing right
+// now is skipped by the engine and removed on a later refresh.
 func (a *App) enforce(e *core.Engine) (*core.EnforceResult, error) {
-	a.mu.Lock()
-	if a.busy {
-		a.mu.Unlock()
-		return &core.EnforceResult{Removed: []string{}, Pending: []string{}}, nil
-	}
-	a.busy = true
-	a.mu.Unlock()
-	defer func() {
-		a.mu.Lock()
-		a.busy = false
-		a.mu.Unlock()
-	}()
 	return e.Enforce()
 }
 
@@ -391,41 +371,25 @@ func (a *App) offboard(cl *core.Cloud) map[string]any {
 }
 
 func (a *App) Push(id string, opt core.PushOptions) Result {
-	return a.exclusive(func() (any, error) {
-		e, err := a.getEngine()
-		if err != nil {
-			return nil, err
-		}
+	return a.withEngine(func(e *core.Engine) (any, error) {
 		return e.Push(id, opt)
 	})
 }
 
 func (a *App) Pull(id string, opt core.PullOptions) Result {
-	return a.exclusive(func() (any, error) {
-		e, err := a.getEngine()
-		if err != nil {
-			return nil, err
-		}
+	return a.withEngine(func(e *core.Engine) (any, error) {
 		return e.Pull(id, opt)
 	})
 }
 
 func (a *App) ReleaseLock(id string, force bool) Result {
-	return a.exclusive(func() (any, error) {
-		e, err := a.getEngine()
-		if err != nil {
-			return nil, err
-		}
+	return a.withEngine(func(e *core.Engine) (any, error) {
 		return e.ReleaseLock(id, force)
 	})
 }
 
 func (a *App) TakeLock(id string, force bool) Result {
-	return a.exclusive(func() (any, error) {
-		e, err := a.getEngine()
-		if err != nil {
-			return nil, err
-		}
+	return a.withEngine(func(e *core.Engine) (any, error) {
 		return e.TakeLock(id, force)
 	})
 }
@@ -489,11 +453,7 @@ func (a *App) SetMemberRole(userID, role string) Result {
 }
 
 func (a *App) DeleteRemote(id string) Result {
-	return a.exclusive(func() (any, error) {
-		e, err := a.getEngine()
-		if err != nil {
-			return nil, err
-		}
+	return a.withEngine(func(e *core.Engine) (any, error) {
 		return true, e.DeleteFromCloud(id)
 	})
 }

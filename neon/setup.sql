@@ -1,6 +1,9 @@
 -- ShardX Sync schema for Neon (Data API + Managed Better Auth).
 -- Run on the branch's neondb database (Neon Console > SQL Editor, or `neon psql -f`).
 -- Safe to run again on an existing database: it adds what is missing and replaces the functions.
+-- After every run, refresh the Data API schema cache, or the app reports new functions as missing:
+--   neon data-api refresh-schema --project-id frosty-water-08741847 --branch main --database neondb
+--   (or Neon Console > Data API > Refresh schema cache)
 --
 -- Everyone who can sign in is on one team. Sign-ups are disabled; accounts are created by an admin.
 --   admin   sees and manages every profile, grants access, and is the only one who deletes for good.

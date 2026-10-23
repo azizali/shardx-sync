@@ -58,6 +58,10 @@ details.adv summary { color: var(--muted); cursor: pointer; font-size: 12px; mar
 .search { flex: 1; max-width: 280px; min-width: 120px; }
 .sel { padding: 6px 8px; max-width: 170px; }
 .count { margin-left: auto; font-size: 12px; white-space: nowrap; }
+.jobs { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--accent); white-space: nowrap; }
+.jobs:not([hidden]) + .count { margin-left: 12px; }
+.spin { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--panel2); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .bulk { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 0 12px 8px; padding: 6px 10px; background: #1b2238; border: 1px solid #2c3a66; border-radius: 8px; }
 .bulk #bulk-count { margin-right: 6px; font-weight: 500; }
 
@@ -76,7 +80,10 @@ details.adv summary { color: var(--muted); cursor: pointer; font-size: 12px; mar
 .w-check { width: 30px; } .w-folder { width: 120px; } .w-status { width: 132px; } .w-cloud { width: 110px; } .w-size { width: 80px; }
 .w-lock { width: 100px; } .w-access { width: 96px; } .w-act { width: 152px; }
 .nm { cursor: pointer; font-weight: 500; } .nm:hover { color: var(--accent); }
-.acts { display: flex; gap: 4px; justify-content: flex-end; }
+.acts { display: flex; gap: 4px; justify-content: flex-end; } .acts > span { display: inline-flex; }
+.job { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.job .bar { height: 4px; } .job span { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.why { font-size: 11px; color: var(--muted); }
 .empty-cell { text-align: center; padding: 28px !important; }
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: currentColor; margin-right: 7px; vertical-align: 1px; }
 .s-synced { color: var(--green); } .s-local-changes { color: var(--amber); } .s-cloud-newer, .s-cloud-only { color: var(--blue); }

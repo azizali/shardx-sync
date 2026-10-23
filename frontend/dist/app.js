@@ -8,7 +8,7 @@ const STATUS = {
 };
 const UNFILED = '\u0000unfiled';
 let S = {
-  items: [], selected: null, picked: new Set(), busy: null, progress: null, state: null, launcherRunning: false,
+  items: [], selected: null, picked: new Set(), jobs: {}, state: null, launcherRunning: false,
   role: '', team: null, folder: '', status: '', sort: { key: 'name', dir: 1 },
 };
 try { S.sort = { ...S.sort, ...JSON.parse(localStorage.getItem('sort') || '{}') }; } catch { /* storage unavailable */ }
@@ -239,11 +239,52 @@ function accessCell(i) {
   return `<button class="access-btn" data-open="${esc(i.id)}" title="${esc(title)}">${avatars}${more}${empty}</button>`;
 }
 
+// ---------- jobs: uploads, downloads and lock changes running now, one per profile ----------
+// Why an action is unavailable for a profile, or '' when it can run.
+function blocked(i, action) {
+  const r = i.remote; const lock = r?.lock;
+  if (S.jobs[i.id]) return 'Syncing now';
+  if (action !== 'push' && action !== 'pull') return '';
+  if (i.running) return 'Open in ShardX. Close its window first.';
+  if (r?.deleted) return 'Deleted in the cloud';
+  if (action === 'push' && i.status === 'cloud-only') return 'Not on this computer';
+  if (action === 'push' && lock && !lock.mine) return `Checked out by ${handle(lock.email)} on ${lock.machine}`;
+  if (action === 'pull' && !r) return 'Not uploaded yet';
+  return '';
+}
+// Disabled buttons do not show tooltips reliably, so the reason sits on a wrapper.
+function btn(i, action, label, attrs) {
+  const why = blocked(i, action);
+  return `<span title="${esc(why)}"><button class="btn sm" ${attrs} ${why ? 'disabled' : ''}>${label}</button></span>`;
+}
+const progressText = (j) => (j.pct ? `${j.pct}% · ${j.step}` : j.step);
+function actionsCell(i) {
+  const j = S.jobs[i.id];
+  if (j) {
+    return `<div class="job" title="${esc(j.detail || progressText(j))}"><div class="bar"><i style="width:${j.pct || 0}%"></i></div>
+      <span>${esc(progressText(j))}</span></div>`;
+  }
+  return `<div class="acts">${btn(i, 'push', 'Upload', `data-push="${esc(i.id)}"`)}${btn(i, 'pull', 'Download', `data-pull="${esc(i.id)}"`)}</div>`;
+}
+const progressHtml = (j) => `<div class="bar"><i style="width:${j.pct ?? 0}%"></i></div>
+  <div class="ptext">${esc(j.step)}${j.detail ? ' · ' + esc(j.detail) : ''}</div>`;
+function renderJobs() {
+  const all = Object.values(S.jobs); const queued = all.filter((j) => j.step === 'Queued').length; const active = all.length - queued;
+  $('#jobs').hidden = !all.length;
+  $('#jobs').innerHTML = `<i class="spin"></i>${[active ? `${active} syncing` : '', queued ? `${queued} queued` : ''].filter(Boolean).join(' · ')}`;
+}
+// Progress events update just that row and the drawer's bar, so the table does not redraw on every event.
+function updateJob(id) {
+  renderJobs();
+  const i = byId(id); if (!i) return;
+  const cell = document.querySelector(`[data-act="${CSS.escape(id)}"]`);
+  if (cell) cell.innerHTML = actionsCell(i);
+  if (id === S.selected) { const pe = $('#d-progress'); if (pe && S.jobs[id]) pe.innerHTML = progressHtml(S.jobs[id]); else renderDetail(); }
+}
+
 function rowHtml(i) {
-  const r = i.remote; const lock = r?.lock; const busy = !!S.busy; const st = statusOf(i);
+  const r = i.remote; const lock = r?.lock; const st = statusOf(i);
   const hasLocal = i.status !== 'cloud-only';
-  const pushOff = !hasLocal || r?.deleted || busy || i.running || (lock && !lock.mine);
-  const pullOff = !r || r.deleted || busy || i.running;
   const cloud = !r ? '—' : r.deleted ? 'deleted' : `v${r.version} · ${ago(r.updatedAt)}`;
   const cloudTitle = r && !r.deleted ? `v${r.version} by ${r.updatedBy} on ${r.updatedFrom} (${osName(r.updatedOs)})` : '';
   const lockText = !lock ? '<span class="muted">—</span>' : lock.mine ? 'You' : esc(handle(lock.email));
@@ -256,10 +297,7 @@ function rowHtml(i) {
     <td class="c-size muted">${fmtBytes(hasLocal ? i.localBytes : r?.sizeBytes)}</td>
     <td class="c-lock" title="${lock ? esc(`${lock.email} on ${lock.machine}`) : ''}">${lockText}</td>
     <td class="c-access">${accessCell(i)}</td>
-    <td><div class="acts">
-      <button class="btn sm" data-push="${esc(i.id)}" ${pushOff ? 'disabled' : ''}>Upload</button>
-      <button class="btn sm" data-pull="${esc(i.id)}" ${pullOff ? 'disabled' : ''}>Download</button>
-    </div></td></tr>`;
+    <td data-act="${esc(i.id)}">${actionsCell(i)}</td></tr>`;
 }
 
 function renderTable() {
@@ -271,7 +309,7 @@ function renderTable() {
   $('#check-all').indeterminate = picked > 0 && picked < rows.length;
   $('#bulk').hidden = S.picked.size === 0;
   $('#bulk-count').textContent = `${S.picked.size} selected`;
-  for (const b of $$('[data-bulk]')) b.disabled = !!S.busy;
+  renderJobs();
   $('[data-bulk="delete"]').textContent = isAdmin() ? 'Delete for good' : 'Delete';
   for (const th of $$('th[data-sort]')) {
     const on = th.dataset.sort === S.sort.key;
@@ -313,19 +351,16 @@ async function bulk(kind) {
   if (kind === 'push' && !isAdmin() && items.some((i) => !i.remote) && !await ask(WORKSPACE_NOTICE)) return;
   if (kind === 'pull' && S.launcherRunning && !await ask('ShardX Launcher is open. Continue?')) return;
   const { label, fn } = BULK[kind];
-  S.busy = 'bulk'; renderAll();
+  S.picked.clear(); renderTable();
+  // All start at once; the app runs three transfers at a time and queues the rest.
   let done = 0; const skipped = [];
-  for (const [k, i] of items.entries()) {
-    log(`${label} ${k + 1}/${n}: ${i.name}`);
-    const r = await fn(i);
-    if (r.ok) { done++; log(`${label}: ${i.name}. Done`, 'ok'); continue; }
+  await Promise.all(items.map(async (i) => {
+    const r = await run(i, label, () => fn(i));
+    if (r.ok) { done++; return; }
     // Anything that needs a decision (overwrite, take over a lock) is left for the row's own button.
     if (r.error.code.startsWith('CONFIRM') || r.error.code === 'LOCKED') skipped.push(i.name);
-    log(`${label}: ${i.name}. ${r.error.message}`, 'bad');
-  }
-  S.busy = null; S.picked.clear();
+  }));
   log(`${label}: ${done} of ${n} done${skipped.length ? `, ${skipped.length} need a decision: ${skipped.join(', ')}` : ''}`, done === n ? 'ok' : 'bad');
-  await refresh();
 }
 
 // ---------- detail drawer ----------
@@ -333,16 +368,17 @@ function renderDetail() {
   const el = $('#detail'); const i = byId(S.selected);
   el.hidden = !i;
   if (!i) { el.innerHTML = ''; return; }
-  const r = i.remote; const lock = r?.lock; const busy = !!S.busy; const st = statusOf(i);
+  const r = i.remote; const lock = r?.lock; const st = statusOf(i);
   const hasLocal = i.status !== 'cloud-only';
-  const p = S.progress && S.progress.id === i.id ? S.progress : null;
+  const job = S.jobs[i.id]; const busy = job ? 'disabled title="Syncing now"' : '';
+  const pushWhy = blocked(i, 'push'); const pullWhy = blocked(i, 'pull');
   const lockText = !r ? '—' : !lock ? 'Free'
     : lock.mine ? `You · ${esc(ago(lock.at))}` : `${esc(lock.email)} on ${esc(lock.machine)} · ${esc(ago(lock.at))}`;
   el.innerHTML = `
     <div class="dhead"><div><h2 title="${esc(i.name)}">${esc(i.name)}</h2>
       <div class="muted">${i.folder ? esc(i.folder) : 'Unfiled'} · <span class="s-${st}"><i class="dot"></i>${STATUS[st]}</span></div></div>
       <button class="btn sm ghost" id="d-close">Close</button></div>
-    ${p ? `<div class="progress"><div class="bar"><i style="width:${p.pct ?? 0}%"></i></div><div class="ptext">${esc(p.step)}${p.detail ? ' · ' + esc(p.detail) : ''}</div></div>` : ''}
+    ${job ? `<div class="progress" id="d-progress">${progressHtml(job)}</div>` : ''}
     ${i.running ? '<p class="warn">Open in ShardX. Close it to sync.</p>' : ''}
     ${r?.deleted ? '<p class="warn">Deleted in the cloud.</p>' : ''}
     <dl class="kv">
@@ -353,24 +389,24 @@ function renderDetail() {
       <dt>Checked out</dt><dd>${lockText}</dd>
     </dl>
     <div class="sec">
-      <div class="row"><button class="btn sm primary" id="a-push" ${!hasLocal || r?.deleted || busy || i.running || (lock && !lock.mine) ? 'disabled' : ''}>Upload</button>
-        <label class="check"><input type="checkbox" id="a-keep" ${lock?.mine ? 'checked' : ''}> Keep checked out</label></div>
-      <div class="row"><button class="btn sm primary" id="a-pull" ${!r || r.deleted || busy || i.running ? 'disabled' : ''}>Download</button>
-        <label class="check"><input type="checkbox" id="a-lock" checked> Check out to me</label></div>
+      <div class="row"><button class="btn sm primary" id="a-push" ${pushWhy ? 'disabled' : ''}>Upload</button>
+        ${pushWhy ? `<span class="why">${esc(pushWhy)}</span>` : `<label class="check"><input type="checkbox" id="a-keep" ${lock?.mine ? 'checked' : ''}> Keep checked out</label>`}</div>
+      <div class="row"><button class="btn sm primary" id="a-pull" ${pullWhy ? 'disabled' : ''}>Download</button>
+        ${pullWhy ? `<span class="why">${esc(pullWhy)}</span>` : '<label class="check"><input type="checkbox" id="a-lock" checked> Check out to me</label>'}</div>
       <div class="row">
-        ${r && !r.deleted && !lock ? `<button class="btn sm" id="a-take" ${busy ? 'disabled' : ''}>Check out</button>` : ''}
-        ${lock?.mine ? `<button class="btn sm" id="a-release" ${busy ? 'disabled' : ''}>Release</button>` : ''}
-        ${lock && !lock.mine ? `<button class="btn sm danger" id="a-force" ${busy ? 'disabled' : ''}>Force unlock</button>` : ''}
-        ${r?.deleted && isAdmin() ? `<button class="btn sm primary" id="a-restore" ${busy ? 'disabled' : ''}>Restore</button>` : ''}
-        ${r && (!r.deleted || isAdmin()) ? `<button class="btn sm danger" id="a-delete" ${busy || (r.deleted && !isAdmin()) ? 'disabled' : ''}>${isAdmin() ? 'Delete for good' : 'Delete'}</button>` : ''}
+        ${r && !r.deleted && !lock ? `<button class="btn sm" id="a-take" ${busy}>Check out</button>` : ''}
+        ${lock?.mine ? `<button class="btn sm" id="a-release" ${busy}>Release</button>` : ''}
+        ${lock && !lock.mine ? `<button class="btn sm danger" id="a-force" ${busy}>Force unlock</button>` : ''}
+        ${r?.deleted && isAdmin() ? `<button class="btn sm primary" id="a-restore" ${busy}>Restore</button>` : ''}
+        ${r && (!r.deleted || isAdmin()) ? `<button class="btn sm danger" id="a-delete" ${busy}>${isAdmin() ? 'Delete for good' : 'Delete'}</button>` : ''}
       </div>
     </div>
     ${isAdmin() && r && !r.deleted && S.team ? accessSection(i) : ''}
     <div class="foot"><button class="link" id="a-backups">Backups folder</button><button class="link" id="a-shardx">ShardX folder</button></div>`;
   const on = (id, fn) => { const b = $(id); if (b) b.onclick = fn; };
   on('#d-close', () => { S.selected = null; renderDetail(); renderTable(); });
-  on('#a-push', () => doPush(i, { keepLock: $('#a-keep').checked }));
-  on('#a-pull', () => doPull(i, { takeLock: $('#a-lock').checked }));
+  on('#a-push', () => doPush(i, { keepLock: !!$('#a-keep')?.checked }));
+  on('#a-pull', () => doPull(i, { takeLock: !!$('#a-lock')?.checked }));
   on('#a-take', () => run(i, 'Check out', () => api.takeLock(i.id, false)));
   on('#a-release', () => run(i, 'Release lock', () => api.releaseLock(i.id, false)));
   on('#a-force', async () => await ask(`Force unlock "${i.name}"? ${lock.email} may still be using it.`)
@@ -460,13 +496,29 @@ $('#pane-access').addEventListener('click', async (e) => {
 
 // ---------- single-profile actions ----------
 async function run(i, label, fn) {
-  S.busy = i.id; S.progress = { id: i.id, step: label, pct: 0 }; renderTable(); renderDetail();
+  if (S.jobs[i.id]) {
+    log(`${label}: ${i.name}. Already syncing`, 'bad');
+    return { ok: false, error: { code: 'BUSY', message: 'Syncing now' } };
+  }
+  S.jobs[i.id] = { step: label, pct: 0 };
+  updateJob(i.id); if (i.id === S.selected) renderDetail();
   const r = await fn();
-  S.busy = null;
+  delete S.jobs[i.id];
   if (r.ok) log(`${label}: ${i.name}. Done`, 'ok'); else log(`${label}: ${i.name}. ${r.error.message}`, 'bad');
-  S.progress = null;
-  await refresh();
+  updateJob(i.id);
+  await refreshSoon();
   return r;
+}
+
+// Jobs finishing together share one refresh, plus one more if another finished while it ran.
+let refreshing = null; let refreshAgain = false;
+function refreshSoon() {
+  if (refreshing) { refreshAgain = true; return refreshing; }
+  refreshing = (async () => {
+    do { refreshAgain = false; await refresh(); } while (refreshAgain);
+    refreshing = null;
+  })();
+  return refreshing;
 }
 
 async function doPush(i, opts) {
@@ -497,6 +549,10 @@ async function doPull(i, opts) {
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.selected) { S.selected = null; renderDetail(); renderTable(); } });
 
 apiReady.then(() => {
-  api.onProgress((p) => { S.progress = p; if (p.id === S.selected) renderDetail(); });
+  api.onProgress((p) => {
+    const j = S.jobs[p.id]; if (!j) return;
+    Object.assign(j, { step: p.step, pct: p.pct, detail: p.detail });
+    updateJob(p.id);
+  });
   boot();
 });

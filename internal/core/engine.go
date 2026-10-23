@@ -82,13 +82,60 @@ type Engine struct {
 	state     *stateStore
 	tmpDir    string
 	backupDir string
+
+	mu       *sync.Mutex
+	inflight map[string]string // profile id -> what is running on it
+	slots    chan struct{}     // one per upload or download running
 }
+
+// MaxParallel is how many uploads and downloads run at once. Further ones wait in a queue.
+const MaxParallel = 3
+
+// installMu serializes the one step of a download that writes files shared by all profiles:
+// proxies.json and extensions/. Everything else in uploads and downloads runs in parallel.
+var installMu sync.Mutex
 
 func NewEngine(e Engine) *Engine {
 	e.state = newStateStore(filepath.Join(e.WorkDir, "sync-state.json"))
 	e.tmpDir = filepath.Join(e.WorkDir, "tmp")
 	e.backupDir = filepath.Join(e.WorkDir, "backups")
+	e.mu = &sync.Mutex{}
+	e.inflight = map[string]string{}
+	e.slots = make(chan struct{}, MaxParallel)
 	return &e
+}
+
+// begin marks a profile busy so two operations on it never overlap. Different profiles run in parallel.
+func (e *Engine) begin(id, what string) (func(), error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if cur, ok := e.inflight[id]; ok {
+		return nil, Errf("BUSY", "This profile is busy (%s). Wait for it to finish.", strings.ToLower(cur))
+	}
+	e.inflight[id] = what
+	return func() {
+		e.mu.Lock()
+		delete(e.inflight, id)
+		e.mu.Unlock()
+	}, nil
+}
+
+// slot waits for a free transfer slot, showing the profile as queued meanwhile. Returns its release.
+func (e *Engine) slot(id string) func() {
+	select {
+	case e.slots <- struct{}{}:
+	default:
+		e.progress(id, "Queued", 0, "Waiting for another transfer to finish")
+		e.slots <- struct{}{}
+	}
+	return func() { <-e.slots }
+}
+
+// Busy reports how many operations are running.
+func (e *Engine) Busy() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.inflight)
 }
 
 func (e *Engine) BackupDir() string { return e.backupDir }
@@ -251,6 +298,12 @@ func randHex(n int) string {
 }
 
 func (e *Engine) Push(id string, opt PushOptions) (*Row, error) {
+	release, err := e.begin(id, "Uploading")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	defer e.slot(id)()
 	e.progress(id, "Checking", 0, "")
 	p, err := ReadProfile(e.Root, id)
 	if err != nil {
@@ -403,6 +456,12 @@ type PullResult struct {
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 func (e *Engine) Pull(id string, opt PullOptions) (res *PullResult, err error) {
+	release, err := e.begin(id, "Downloading")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	defer e.slot(id)()
 	e.progress(id, "Checking", 0, "")
 	remote, err := e.Cloud.GetProfile(id)
 	if err != nil {
@@ -508,7 +567,9 @@ func (e *Engine) Pull(id string, opt PullOptions) (res *PullResult, err error) {
 		return nil, err
 	}
 	e.progress(id, "Backing up current copy", 85, "")
+	installMu.Lock()
 	if err := e.installFromStaging(id, staging, meta); err != nil {
+		installMu.Unlock()
 		return nil, err
 	}
 	cookieNote := ""
@@ -517,6 +578,7 @@ func (e *Engine) Pull(id string, opt PullOptions) (res *PullResult, err error) {
 			cookieNote = "Cookies could not be restored here, so site logins may need to be redone: " + err.Error()
 		}
 	}
+	installMu.Unlock()
 	if p, err := ReadProfile(e.Root, id); err == nil {
 		_, fp, _ := e.localFingerprint(p)
 		e.state.set(id, &syncState{Version: remote.Version, Fingerprint: fp, At: time.Now().UTC().Format(time.RFC3339)})
@@ -643,12 +705,32 @@ func (e *Engine) pruneBackups(id string) {
 
 // ---------- locks & delete ----------
 
-func (e *Engine) ReleaseLock(id string, force bool) (*Row, error) { return e.Cloud.ReleaseLock(id, e.Machine, force) }
-func (e *Engine) TakeLock(id string, force bool) (*Row, error)    { return e.Cloud.ClaimLock(id, e.Machine, force) }
+func (e *Engine) ReleaseLock(id string, force bool) (*Row, error) {
+	release, err := e.begin(id, "Releasing")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return e.Cloud.ReleaseLock(id, e.Machine, force)
+}
+
+func (e *Engine) TakeLock(id string, force bool) (*Row, error) {
+	release, err := e.begin(id, "Checking out")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return e.Cloud.ClaimLock(id, e.Machine, force)
+}
 
 // DeleteFromCloud is a soft delete for everyone but admins: the profile disappears from the team's list
 // and an admin can restore it. An admin deletes for good, which also removes the uploaded archive.
 func (e *Engine) DeleteFromCloud(id string) error {
+	release, err := e.begin(id, "Deleting")
+	if err != nil {
+		return err
+	}
+	defer release()
 	remote, err := e.Cloud.GetProfile(id)
 	if err != nil || remote == nil {
 		return err
@@ -715,7 +797,13 @@ func (e *Engine) Enforce() (*EnforceResult, error) {
 			res.Pending = append(res.Pending, names[id])
 			continue
 		}
-		if err := e.removeLocal(id); err != nil {
+		release, err := e.begin(id, "Removing")
+		if err != nil {
+			continue // syncing right now; the next refresh removes it
+		}
+		err = e.removeLocal(id)
+		release()
+		if err != nil {
 			return res, err
 		}
 		res.Removed = append(res.Removed, names[id])

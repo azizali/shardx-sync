@@ -67,7 +67,9 @@ Deleting the account first leaves their copies in place, because the app can no 
 
 This relies on the member opening the app. Copies made outside it are not tracked.
 
-Upgrading an existing team: run `neon/setup.sql` again. It is safe to repeat. Afterwards only the admin sees profiles until they are shared.
+Upgrading an existing team: run `neon/setup.sql` again. It is safe to repeat. Then refresh the Data API schema cache
+(`neon data-api refresh-schema --project-id frosty-water-08741847 --branch main --database neondb`), or the app reports
+the new functions as missing. Afterwards only the admin sees profiles until they are shared.
 
 If the emailed code does not arrive, a fallback is to open sign-ups briefly, let them create the account
 from the password screen, then close sign-ups again:
