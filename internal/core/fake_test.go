@@ -14,10 +14,18 @@ type fakeBackend struct {
 	rows     map[string]*Row
 	files    map[string][]byte
 	settings map[string]string
+	// tombstones are profiles an admin deleted for good; denied[user|id] is access an admin took away;
+	// removed are offboarded users.
+	tombstones map[string]bool
+	denied     map[string]bool
+	removed    map[string]bool
+	// verdictErr simulates the server being unreachable.
+	verdictErr error
 }
 
 func newFakeBackend() *fakeBackend {
-	return &fakeBackend{rows: map[string]*Row{}, files: map[string][]byte{}, settings: map[string]string{}}
+	return &fakeBackend{rows: map[string]*Row{}, files: map[string][]byte{}, settings: map[string]string{},
+		tombstones: map[string]bool{}, denied: map[string]bool{}, removed: map[string]bool{}}
 }
 
 // fakeCloud is one signed-in user talking to the shared fakeBackend.
@@ -127,6 +135,7 @@ func (c *fakeCloud) DeleteProfile(id string) error {
 	c.b.mu.Lock()
 	defer c.b.mu.Unlock()
 	if c.role == RoleAdmin {
+		c.b.tombstones[id] = true
 		delete(c.b.rows, id)
 		return nil
 	}
@@ -134,6 +143,30 @@ func (c *fakeCloud) DeleteProfile(id string) error {
 		r.DeletedAt = time.Now().Format(time.RFC3339)
 	}
 	return nil
+}
+
+// ProfileVerdicts mirrors profile_verdicts in neon/setup.sql.
+func (c *fakeCloud) ProfileVerdicts(ids []string) (map[string]string, error) {
+	c.b.mu.Lock()
+	defer c.b.mu.Unlock()
+	if c.b.verdictErr != nil {
+		return nil, c.b.verdictErr
+	}
+	out := map[string]string{}
+	for _, id := range ids {
+		r := c.b.rows[id]
+		switch {
+		case r == nil && !c.b.tombstones[id]:
+			out[id] = "unknown"
+		case c.role == RoleAdmin && !c.b.removed[c.user.ID]:
+			out[id] = "keep"
+		case c.b.tombstones[id] || r.DeletedAt != "" || c.b.removed[c.user.ID] || c.b.denied[c.user.ID+"|"+id]:
+			out[id] = "remove"
+		default:
+			out[id] = "keep"
+		}
+	}
+	return out, nil
 }
 
 func (c *fakeCloud) Upload(key string, data []byte) error {

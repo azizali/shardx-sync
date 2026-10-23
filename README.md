@@ -52,6 +52,21 @@ The team's first admin is set once, in the SQL Editor, after they have signed in
 select public.bootstrap_admin('you@example.com');
 ```
 
+### What belongs to the workspace
+
+Everything uploaded belongs to the workspace, and admins can see it. A profile that was never uploaded belongs to
+whoever made it, and the sync app never touches it. Members are asked once before their first upload of a profile.
+
+When a member's access to a profile ends (grant removed, profile deleted, or the member removed), their app deletes
+its copies the next time it starts or refreshes: the profile, its browser data, its ShardBrowser Trash copy, and
+this app's backups. A profile open in ShardX is removed once its window is closed. Admins' copies are never removed.
+
+To offboard someone, set their Status to **Removed** in **Team access**. Their app deletes every workspace profile
+and signs them out. Once the member shows "wiped", delete their account in **Auth > Users**.
+Deleting the account first leaves their copies in place, because the app can no longer sign in to learn what to remove.
+
+This relies on the member opening the app. Copies made outside it are not tracked.
+
 Upgrading an existing team: run `neon/setup.sql` again. It is safe to repeat. Afterwards only the admin sees profiles until they are shared.
 
 If the emailed code does not arrive, a fallback is to open sign-ups briefly, let them create the account

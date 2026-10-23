@@ -7,6 +7,10 @@
 --   member  sees only the profiles granted to them, directly or through a folder. Deleting hides a
 --           profile until an admin restores it (a soft delete).
 --
+-- Everything uploaded belongs to the workspace. When a member loses access to a profile, their app asks
+-- profile_verdicts() and deletes its local copy. Profiles never uploaded are never touched.
+-- Offboarding: set_member_status(user, 'removed'), wait for wiped_at, then delete the account.
+--
 -- First run only: sign in to the app once (that records you), then in the SQL Editor run
 --   select public.bootstrap_admin('you@example.com');
 
@@ -43,6 +47,17 @@ create table if not exists public.team_members (
   role     text not null default 'member' check (role in ('admin', 'member')),
   added_at timestamptz not null default now()
 );
+alter table public.team_members add column if not exists status text not null default 'active';
+alter table public.team_members add column if not exists wiped_at timestamptz;
+do $$ begin
+  alter table public.team_members add constraint team_members_status_check check (status in ('active', 'removed'));
+exception when duplicate_object then null; end $$;
+
+-- Profiles an admin deleted for good. Lets a member's app tell "deleted" apart from "never uploaded".
+create table if not exists public.profile_tombstones (
+  id         uuid primary key,
+  deleted_at timestamptz not null default now()
+);
 
 create table if not exists public.profile_grants (
   profile_id uuid not null references public.synced_profiles(id) on delete cascade,
@@ -61,24 +76,33 @@ alter table public.team_settings   enable row level security;
 alter table public.team_members    enable row level security;
 alter table public.profile_grants  enable row level security;
 alter table public.folder_grants   enable row level security;
+alter table public.profile_tombstones enable row level security;
 
 -- Helpers. Security definer, so they can read the grant tables that members cannot read directly.
+-- A removed member keeps their sign-in only so their app can wipe its copies. They get no access.
+create or replace function public.is_active() returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from team_members where user_id = auth.uid() and status = 'active');
+$$;
+
 create or replace function public.is_admin() returns boolean
 language sql stable security definer set search_path = public as $$
-  select exists (select 1 from team_members where user_id = auth.uid() and role = 'admin');
+  select exists (select 1 from team_members where user_id = auth.uid() and role = 'admin' and status = 'active');
 $$;
 
 create or replace function public.can_access(p_id uuid, p_folder text) returns boolean
 language sql stable security definer set search_path = public as $$
   select public.is_admin()
-      or exists (select 1 from profile_grants where profile_id = p_id and user_id = auth.uid())
-      or (coalesce(p_folder, '') <> '' and exists (select 1 from folder_grants where folder = p_folder and user_id = auth.uid()));
+      or (public.is_active() and (
+        exists (select 1 from profile_grants where profile_id = p_id and user_id = auth.uid())
+        or (coalesce(p_folder, '') <> '' and exists (select 1 from folder_grants where folder = p_folder and user_id = auth.uid()))));
 $$;
 
 create or replace function public.folder_granted(p_folder text) returns boolean
 language sql stable security definer set search_path = public as $$
   select public.is_admin()
-      or (coalesce(p_folder, '') <> '' and exists (select 1 from folder_grants where folder = p_folder and user_id = auth.uid()));
+      or (public.is_active() and coalesce(p_folder, '') <> ''
+        and exists (select 1 from folder_grants where folder = p_folder and user_id = auth.uid()));
 $$;
 
 -- Row access. Members never get a delete policy, so a direct DELETE through the Data API is refused.
@@ -101,6 +125,7 @@ drop policy if exists "admins read folder grants" on public.folder_grants;
 create policy "admins read folder grants" on public.folder_grants for select to authenticated using (public.is_admin());
 
 -- Records the signed-in user on the team list. A new user is a member; an existing role is kept.
+-- Returns 'admin', 'member', or 'removed' for an offboarded member.
 create or replace function public.register_me() returns text
 language plpgsql security definer set search_path = public as $$
 declare me uuid := auth.uid(); r text;
@@ -108,13 +133,13 @@ begin
   if me is null then raise exception 'not signed in'; end if;
   insert into team_members (user_id, email, role) values (me, coalesce(auth.jwt() ->> 'email', ''), 'member')
     on conflict (user_id) do update set email = excluded.email;
-  select role into r from team_members where user_id = me;
+  select case when status = 'removed' then 'removed' else role end into r from team_members where user_id = me;
   return r;
 end $$;
 
 create or replace function public.my_role() returns text
 language sql stable security definer set search_path = public as $$
-  select coalesce((select role from team_members where user_id = auth.uid()), 'member');
+  select coalesce((select case when status = 'removed' then 'removed' else role end from team_members where user_id = auth.uid()), 'member');
 $$;
 
 -- Run by hand in the SQL Editor (the owner role), never from the app.
@@ -169,6 +194,10 @@ language plpgsql security definer set search_path = public as $$
 declare r public.synced_profiles; me uuid := auth.uid(); my_email text := auth.jwt() ->> 'email';
 begin
   if me is null then raise exception 'not signed in'; end if;
+  if exists (select 1 from profile_tombstones where id = p_id) then
+    raise exception 'DELETED: this profile was deleted for good';
+  end if;
+  if not public.is_active() then raise exception 'NO_ACCESS: your access was removed'; end if;
   select * into r from synced_profiles where id = p_id for update;
   if not found then
     if p_expected <> 0 then raise exception 'CONFLICT:0'; end if;
@@ -212,6 +241,7 @@ begin
   if not found then raise exception 'profile is not in the cloud'; end if;
   if not public.can_access(r.id, r.folder) then raise exception 'NO_ACCESS: you do not have access to this profile'; end if;
   if public.is_admin() then
+    insert into profile_tombstones (id) values (p_id) on conflict do nothing;
     delete from synced_profiles where id = p_id;
   elsif r.deleted_at is null then
     update synced_profiles set deleted_at = now(), deleted_by_email = my_email,
@@ -255,11 +285,50 @@ language plpgsql security definer set search_path = public as $$
 begin
   if not public.is_admin() then raise exception 'ADMIN_ONLY: only an admin can do this'; end if;
   if p_role not in ('admin', 'member') then raise exception 'Role must be admin or member.'; end if;
-  if p_role <> 'admin' and not exists (select 1 from team_members where role = 'admin' and user_id <> p_user_id) then
+  if p_role <> 'admin' and not exists (select 1 from team_members where role = 'admin' and status = 'active' and user_id <> p_user_id) then
     raise exception 'There must be at least one admin.';
   end if;
   update team_members set role = p_role where user_id = p_user_id;
 end $$;
+
+-- Offboarding. 'removed' drops every grant; the member's app then wipes its copies and calls report_wipe().
+create or replace function public.set_member_status(p_user_id uuid, p_status text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_admin() then raise exception 'ADMIN_ONLY: only an admin can do this'; end if;
+  if p_status not in ('active', 'removed') then raise exception 'Status must be active or removed.'; end if;
+  if p_status = 'removed' and not exists (
+    select 1 from team_members where role = 'admin' and status = 'active' and user_id <> p_user_id) then
+    raise exception 'There must be at least one admin.';
+  end if;
+  update team_members set status = p_status, wiped_at = null where user_id = p_user_id;
+  if p_status = 'removed' then
+    delete from profile_grants where user_id = p_user_id;
+    delete from folder_grants where user_id = p_user_id;
+  end if;
+end $$;
+
+create or replace function public.report_wipe() returns void
+language sql security definer set search_path = public as $$
+  update team_members set wiped_at = now() where user_id = auth.uid() and status = 'removed';
+$$;
+
+-- What should this computer do with each profile it holds? 'keep', 'remove' (access ended, deleted, or the
+-- member was removed), or 'unknown' (never uploaded, so it belongs to whoever made it). Admins keep everything.
+create or replace function public.profile_verdicts(p_ids uuid[]) returns table (id uuid, verdict text)
+language sql stable security definer set search_path = public as $$
+  select i.id,
+    case
+      when s.id is null and t.id is null then 'unknown'
+      when public.is_admin() then 'keep'
+      when t.id is not null or s.deleted_at is not null then 'remove'
+      when public.can_access(s.id, s.folder) then 'keep'
+      else 'remove'
+    end
+  from unnest(p_ids) as i(id)
+  left join synced_profiles s on s.id = i.id
+  left join profile_tombstones t on t.id = i.id;
+$$;
 
 -- Grants: the app talks to these tables through the functions above, not directly.
 grant usage on schema public to authenticated;
@@ -268,16 +337,19 @@ revoke insert, update, delete on public.synced_profiles from authenticated;
 grant select, insert on public.team_settings to authenticated;
 grant select on public.team_members, public.profile_grants, public.folder_grants to authenticated;
 revoke all on public.synced_profiles, public.team_settings, public.team_members, public.profile_grants, public.folder_grants from anonymous;
+revoke all on public.profile_tombstones from anonymous, authenticated;
 
 revoke all on function public.claim_lock(uuid, text, boolean), public.release_lock(uuid, text, boolean),
   public.commit_version(uuid, integer, text, text, integer, bigint, text, text, text, text, boolean),
   public.delete_profile(uuid), public.restore_profile(uuid), public.register_me(), public.my_role(),
   public.set_profile_access(uuid, uuid[]), public.set_folder_access(text, uuid[]), public.set_member_role(uuid, text),
+  public.set_member_status(uuid, text), public.report_wipe(), public.profile_verdicts(uuid[]),
   public.bootstrap_admin(text) from public, anonymous;
 grant execute on function public.claim_lock(uuid, text, boolean), public.release_lock(uuid, text, boolean),
   public.commit_version(uuid, integer, text, text, integer, bigint, text, text, text, text, boolean),
   public.delete_profile(uuid), public.restore_profile(uuid), public.register_me(), public.my_role(),
-  public.set_profile_access(uuid, uuid[]), public.set_folder_access(text, uuid[]), public.set_member_role(uuid, text)
+  public.set_profile_access(uuid, uuid[]), public.set_folder_access(text, uuid[]), public.set_member_role(uuid, text),
+  public.set_member_status(uuid, text), public.report_wipe(), public.profile_verdicts(uuid[])
   to authenticated;
 revoke all on function public.bootstrap_admin(text) from authenticated;
 
@@ -285,7 +357,8 @@ revoke all on function public.bootstrap_admin(text) from authenticated;
 -- yet may be uploaded to. An admin may always clean up. Everyone else needs live access.
 create or replace function public.can_upload(p_id uuid) returns boolean
 language sql stable security definer set search_path = public as $$
-  select not exists (select 1 from synced_profiles where id = p_id)
+  select (not exists (select 1 from synced_profiles where id = p_id)
+          and not exists (select 1 from profile_tombstones where id = p_id) and public.is_active())
       or exists (select 1 from synced_profiles s where s.id = p_id and public.is_admin())
       or exists (select 1 from synced_profiles s where s.id = p_id and s.deleted_at is null and public.can_access(s.id, s.folder));
 $$;

@@ -13,6 +13,9 @@ let S = {
 };
 try { S.sort = { ...S.sort, ...JSON.parse(localStorage.getItem('sort') || '{}') }; } catch { /* storage unavailable */ }
 const isAdmin = () => S.role === 'admin';
+const active = (m) => m.role !== 'admin' && m.status !== 'removed'; // members who can be given access
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const WORKSPACE_NOTICE = 'Uploading makes this profile part of the workspace. Admins can see it, and it is removed from this computer if your access ends.';
 const statusOf = (i) => (i.remote?.deleted ? 'deleted' : i.status);
 const byId = (id) => S.items.find((x) => x.id === id);
 
@@ -51,6 +54,16 @@ function log(msg, cls = '') { const d = document.createElement('div'); d.classNa
 async function boot() {
   const r = await api.state(); S.state = r.data;
   if (!S.state.configured) return openSettings(false);
+  const off = S.state.offboard;
+  if (off) {
+    showLogin(false);
+    $('#login-err').textContent = off.done
+      ? `Your access to this workspace was removed.${off.removed?.length ? ` ${plural(off.removed.length, 'profile was', 'profiles were')} removed from this computer.` : ''}`
+      : off.pending?.length
+        ? `Your access was removed. Close ${off.pending.join(', ')} in ShardX, then reopen ShardX Sync to finish.`
+        : `Your access was removed, but this computer could not finish removing its profiles${off.error ? `: ${off.error}` : '.'}`;
+    return;
+  }
   if (!S.state.user) return showLogin(false);
   show('main');
   $('#who-email').textContent = S.state.user.email;
@@ -144,10 +157,18 @@ async function refresh() {
   S.items = r.data.items; S.launcherRunning = r.data.launcherRunning;
   S.picked = new Set([...S.picked].filter(byId));
   $('#banner-launcher').hidden = !S.launcherRunning;
+  const { removed = [], pending = [], enforceError } = r.data;
+  if (removed.length) log(`Removed ${plural(removed.length, 'profile', 'profiles')} you no longer have access to: ${removed.join(', ')}`, 'bad');
+  if (enforceError) log(`Could not check for ended access: ${enforceError}`, 'bad');
+  const notes = [];
+  if (removed.length) notes.push(`Removed ${plural(removed.length, 'profile', 'profiles')} you no longer have access to.`);
+  if (pending.length) notes.push(`Access to ${pending.join(', ')} ended. Close ${pending.length === 1 ? 'it' : 'them'} in ShardX to finish removing.`);
+  if (notes.length) { $('#banner-removed').textContent = notes.join(' '); $('#banner-removed').hidden = false; }
   $('#count').title = r.data.root;
   renderAll();
 }
 $('#btn-refresh').onclick = refresh;
+$('#banner-removed').onclick = () => { $('#banner-removed').hidden = true; };
 
 async function loadTeam() {
   if (!isAdmin()) return;
@@ -288,7 +309,8 @@ for (const b of $$('[data-bulk]')) b.onclick = () => bulk(b.dataset.bulk);
 async function bulk(kind) {
   const items = [...S.picked].map(byId).filter(Boolean);
   const n = items.length; if (!n) return;
-  if (kind === 'delete' && !await ask(isAdmin() ? `Delete ${n} profiles for good?` : `Delete ${n} profiles for the team? An admin can restore them.`)) return;
+  if (kind === 'delete' && !await ask(isAdmin() ? `Delete ${n} profiles for good?` : `Delete ${n} profiles for the team? They are also removed from this computer. An admin can restore them.`)) return;
+  if (kind === 'push' && !isAdmin() && items.some((i) => !i.remote) && !await ask(WORKSPACE_NOTICE)) return;
   if (kind === 'pull' && S.launcherRunning && !await ask('ShardX Launcher is open. Continue?')) return;
   const { label, fn } = BULK[kind];
   S.busy = 'bulk'; renderAll();
@@ -355,7 +377,7 @@ function renderDetail() {
     && run(i, 'Force unlock', () => api.releaseLock(i.id, true)));
   on('#a-delete', async () => (isAdmin()
     ? await ask(`Delete "${i.name}" for good? The copy on this computer stays.`)
-    : await ask(`Delete "${i.name}" for the team? An admin can restore it.`))
+    : await ask(`Delete "${i.name}" for the team? It is also removed from this computer. An admin can restore it.`))
     && run(i, 'Delete', () => api.deleteRemote(i.id)));
   on('#a-restore', () => run(i, 'Restore', () => api.restoreRemote(i.id)));
   on('#a-backups', () => api.openBackups());
@@ -365,7 +387,7 @@ function renderDetail() {
 // Admins tick which members can open this profile. Folder access is shown under it, read-only.
 function accessSection(i) {
   const direct = S.team.grants.profiles[i.id] || [];
-  const plain = S.team.members.filter((m) => m.role !== 'admin');
+  const plain = S.team.members.filter(active);
   const viaFolder = i.folder ? (S.team.grants.folders[i.folder] || []) : [];
   return `<div class="sec"><h3>Access</h3><div class="checks">
     ${plain.map((m) => `<label class="check"><input type="checkbox" data-profile-user="${esc(m.user_id)}" ${direct.includes(m.user_id) ? 'checked' : ''}>
@@ -387,15 +409,21 @@ function renderAccess() {
   const t = S.team; if (!t || !isAdmin()) return;
   const counts = (uid) => Object.values(t.grants.profiles).filter((a) => a.includes(uid)).length;
   const foldersOf = (uid) => Object.keys(t.grants.folders).filter((f) => t.grants.folders[f].includes(uid)).length;
-  $('#access-members').innerHTML = `<table class="t"><colgroup><col><col style="width:104px"><col style="width:64px"><col style="width:64px"></colgroup>
-    <thead><tr><th>Member</th><th>Role</th><th class="num">Profiles</th><th class="num">Folders</th></tr></thead><tbody>
-    ${t.members.map((m) => `<tr><td title="${esc(m.email)}">${esc(m.email)}</td>
-      <td class="fit"><select class="sel" data-role-of="${esc(m.user_id)}"><option value="member" ${m.role === 'member' ? 'selected' : ''}>Member</option>
+  const shared = (m) => (m.status === 'removed' ? '—' : m.role === 'admin' ? 'all'
+    : `<span title="${plural(counts(m.user_id), 'profile', 'profiles')}, ${plural(foldersOf(m.user_id), 'folder', 'folders')}">${counts(m.user_id)} · ${foldersOf(m.user_id)}</span>`);
+  const wipe = (m) => (m.status !== 'removed' ? ''
+    : m.wiped_at ? ` <span class="tag" title="Their app deleted its copies">wiped ${esc(ago(m.wiped_at))}</span>` : ' <span class="tag warn-tag">wipe pending</span>');
+  $('#access-members').innerHTML = `<table class="t"><colgroup><col><col style="width:118px"><col style="width:60px"><col style="width:124px"></colgroup>
+    <thead><tr><th>Member</th><th>Role</th><th class="num">Shared</th><th>Status</th></tr></thead><tbody>
+    ${t.members.map((m) => `<tr class="${m.status === 'removed' ? 'gone' : ''}"><td title="${esc(m.email)}">${esc(m.email)}${wipe(m)}</td>
+      <td class="fit"><select class="sel" data-role-of="${esc(m.user_id)}" ${m.status === 'removed' ? 'disabled' : ''}><option value="member" ${m.role === 'member' ? 'selected' : ''}>Member</option>
         <option value="admin" ${m.role === 'admin' ? 'selected' : ''}>Admin</option></select></td>
-      <td class="num muted">${m.role === 'admin' ? 'all' : counts(m.user_id)}</td><td class="num muted">${m.role === 'admin' ? 'all' : foldersOf(m.user_id)}</td></tr>`).join('')
+      <td class="num muted">${shared(m)}</td>
+      <td class="fit"><select class="sel" data-status-of="${esc(m.user_id)}" data-email="${esc(m.email)}"><option value="active" ${m.status !== 'removed' ? 'selected' : ''}>Active</option>
+        <option value="removed" ${m.status === 'removed' ? 'selected' : ''}>Removed</option></select></td></tr>`).join('')
       || '<tr><td colspan="4" class="muted empty-cell">Nobody has signed in yet</td></tr>'}
     </tbody></table>`;
-  const plain = t.members.filter((m) => m.role !== 'admin');
+  const plain = t.members.filter(active);
   const folders = [...new Set([...S.items.map((i) => i.folder).filter(Boolean), ...Object.keys(t.grants.folders)])].sort();
   $('#access-folders').innerHTML = !folders.length ? '<p class="muted">No folders yet.</p>' : folders.map((f) => {
     const granted = new Set(t.grants.folders[f] || []);
@@ -407,10 +435,18 @@ function renderAccess() {
   }).join('');
 }
 $('#pane-access').addEventListener('change', async (e) => {
-  const el = e.target; if (!el.dataset.roleOf) return;
-  const r = await api.setMemberRole(el.dataset.roleOf, el.value);
-  if (!r.ok) tell(r.error.message);
-  loadTeam();
+  const el = e.target;
+  if (el.dataset.roleOf) {
+    const r = await api.setMemberRole(el.dataset.roleOf, el.value);
+    if (!r.ok) tell(r.error.message);
+    return loadTeam();
+  }
+  if (el.dataset.statusOf) {
+    if (el.value === 'removed' && !await ask(`Remove ${el.dataset.email}? They lose access to every profile, and their app deletes its copies of workspace profiles the next time it opens. Delete their account only after the wipe shows as done.`)) return loadTeam();
+    const r = await api.setMemberStatus(el.dataset.statusOf, el.value);
+    if (!r.ok) tell(r.error.message);
+    return loadTeam();
+  }
 });
 $('#pane-access').addEventListener('click', async (e) => {
   const el = e.target.closest('.tg'); if (!el) return;
@@ -434,6 +470,7 @@ async function run(i, label, fn) {
 }
 
 async function doPush(i, opts) {
+  if (!i.remote && !isAdmin() && !await ask(WORKSPACE_NOTICE)) return;
   let r = await run(i, 'Upload', () => api.push(i.id, opts));
   if (!r.ok && r.error.code === 'CONFIRM_OVERWRITE_CLOUD' && await ask(`${r.error.message}\n\nUpload anyway and replace the cloud copy?`)) {
     r = await run(i, 'Upload', () => api.push(i.id, { ...opts, overwrite: true }));

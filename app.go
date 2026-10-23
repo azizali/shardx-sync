@@ -213,12 +213,20 @@ func (a *App) State() Result {
 		// Register also adds users who signed in before team roles existed, so admins can grant them access.
 		role, _ = cl.Register()
 	}
+	var offboard map[string]any
+	if role == core.RoleRemoved {
+		offboard = a.offboard(cl)
+		if done, _ := offboard["done"].(bool); done {
+			user = nil
+		}
+	}
 	root := core.ResolveShardxRoot(c.ShardxRoot)
 	hasPass := a.secrets.Passphrase() != ""
 	return result(map[string]any{
 		"configured": hasPass && cloudErr == nil,
 		"user":       user,
 		"role":       role,
+		"offboard":   offboard,
 		"config": map[string]any{
 			"neonUrl": c.neonURL(), "storageUrl": c.storageURL(), "shardxRoot": c.ShardxRoot, "machine": c.machine(),
 			"skipCaches": c.skipCaches(), "shardxRootResolved": root, "shardxRootValid": core.IsValidShardxRoot(root), "hasPassphrase": hasPass,
@@ -326,11 +334,60 @@ func (a *App) List() Result {
 	if err != nil {
 		return result(nil, err)
 	}
+	enforced, enforceErr := a.enforce(e)
 	items, err := e.Overview()
 	if err != nil {
 		return result(nil, err)
 	}
-	return result(map[string]any{"items": items, "launcherRunning": core.IsLauncherRunning(), "machine": e.Machine, "root": e.Root}, nil)
+	out := map[string]any{"items": items, "launcherRunning": core.IsLauncherRunning(), "machine": e.Machine, "root": e.Root,
+		"removed": enforced.Removed, "pending": enforced.Pending}
+	if enforceErr != nil {
+		out["enforceError"] = enforceErr.Error()
+	}
+	return result(out, nil)
+}
+
+// enforce deletes local copies of profiles the user may no longer have. It skips a turn while a sync runs,
+// so it never deletes a profile in the middle of a download.
+func (a *App) enforce(e *core.Engine) (*core.EnforceResult, error) {
+	a.mu.Lock()
+	if a.busy {
+		a.mu.Unlock()
+		return &core.EnforceResult{Removed: []string{}, Pending: []string{}}, nil
+	}
+	a.busy = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.busy = false
+		a.mu.Unlock()
+	}()
+	return e.Enforce()
+}
+
+// offboard runs for a member an admin removed: delete every workspace profile here, tell the admins, sign out.
+// While a profile is still open in ShardX the member stays signed in, so the next start finishes the job.
+func (a *App) offboard(cl *core.Cloud) map[string]any {
+	e, err := a.getEngine()
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	res, err := a.enforce(e)
+	out := map[string]any{"removed": res.Removed, "pending": res.Pending}
+	if err != nil {
+		out["error"] = err.Error()
+		return out
+	}
+	if len(res.Pending) > 0 {
+		return out
+	}
+	_ = cl.ReportWipe()
+	cl.SignOut()
+	a.mu.Lock()
+	a.engine = nil
+	a.mu.Unlock()
+	out["done"] = true
+	return out
 }
 
 func (a *App) Push(id string, opt core.PushOptions) Result {
@@ -413,6 +470,14 @@ func (a *App) SetFolderAccess(folder string, userIDs []string) Result {
 		return result(nil, err)
 	}
 	return result(true, cl.SetFolderAccess(folder, userIDs))
+}
+
+func (a *App) SetMemberStatus(userID, status string) Result {
+	cl, err := a.getCloud()
+	if err != nil {
+		return result(nil, err)
+	}
+	return result(true, cl.SetMemberStatus(userID, status))
 }
 
 func (a *App) SetMemberRole(userID, role string) Result {

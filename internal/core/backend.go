@@ -27,6 +27,8 @@ type Row struct {
 const (
 	RoleAdmin  = "admin"
 	RoleMember = "member"
+	// RoleRemoved is what the server reports for an offboarded member: their app wipes and signs out.
+	RoleRemoved = "removed"
 )
 
 type CommitArgs struct {
@@ -51,6 +53,7 @@ type Backend interface {
 	CommitVersion(a CommitArgs) (*Row, error)
 	MyRole() (string, error)
 	DeleteProfile(id string) error
+	ProfileVerdicts(ids []string) (map[string]string, error)
 	Upload(key string, data []byte) error
 	Download(key string) ([]byte, error)
 	RemoveFolder(prefix string) error

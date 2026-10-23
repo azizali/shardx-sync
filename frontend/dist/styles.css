@@ -35,6 +35,8 @@ details.adv summary { color: var(--muted); cursor: pointer; font-size: 12px; mar
 .link { background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; padding: 0; } .link:hover { color: var(--text); }
 .logo { width: 40px; height: 40px; border-radius: 11px; background: var(--accent2); display: grid; place-items: center; font-size: 20px; color: #fff; align-self: center; }
 .logo.sm { width: 22px; height: 22px; border-radius: 6px; font-size: 12px; display: inline-grid; }
+.tag.warn-tag { color: var(--amber); border-color: #4d3c15; }
+.t tr.gone td:first-child { color: var(--muted); }
 .tag { font-size: 11px; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
 
 /* shell */
@@ -47,6 +49,7 @@ details.adv summary { color: var(--muted); cursor: pointer; font-size: 12px; mar
 .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; text-align: right; }
 .actions { display: flex; gap: 2px; }
 .banner { background: #3a2e12; color: var(--amber); padding: 6px 14px; font-size: 12px; border-bottom: 1px solid #4d3c15; }
+.banner.removed { background: #3a1717; color: var(--red); border-bottom-color: #552222; cursor: pointer; }
 .body { position: relative; flex: 1; min-height: 0; display: flex; }
 .pane { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
 
@@ -87,7 +90,7 @@ details.adv summary { color: var(--muted); cursor: pointer; font-size: 12px; mar
 .is-member .c-access { display: none; }
 
 /* access */
-.access { overflow-y: auto; padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 12px; align-items: start; }
+.access { overflow-y: auto; padding: 12px; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 12px; align-items: start; }
 @media (max-width: 900px) { .access { grid-template-columns: minmax(0, 1fr); } }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
 .panel .t th { background: var(--panel); }

@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -673,6 +674,95 @@ func (e *Engine) DeleteFromCloud(id string) error {
 	}
 	if err := e.Cloud.DeleteProfile(id); err != nil {
 		return err
+	}
+	e.state.set(id, nil)
+	return nil
+}
+
+// ---------- removal of profiles the user may no longer have ----------
+
+// EnforceResult names the profiles Enforce deleted, and those it will delete once their browser window closes.
+type EnforceResult struct {
+	Removed []string `json:"removed"`
+	Pending []string `json:"pending"`
+}
+
+var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// Enforce deletes this computer's copies of workspace profiles the user may no longer have: their access was
+// removed, the profile was deleted, or the user was offboarded. Profiles that were never uploaded are never
+// touched. It acts only on an explicit "remove" from the server, so a network error removes nothing.
+func (e *Engine) Enforce() (*EnforceResult, error) {
+	res := &EnforceResult{Removed: []string{}, Pending: []string{}}
+	names := e.localCopies()
+	ids := make([]string, 0, len(names))
+	for id := range names {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		return res, nil
+	}
+	verdicts, err := e.Cloud.ProfileVerdicts(ids)
+	if err != nil {
+		return res, err
+	}
+	for _, id := range ids {
+		if verdicts[id] != "remove" {
+			continue
+		}
+		if IsProfileRunning(e.Root, id) {
+			res.Pending = append(res.Pending, names[id])
+			continue
+		}
+		if err := e.removeLocal(id); err != nil {
+			return res, err
+		}
+		res.Removed = append(res.Removed, names[id])
+	}
+	return res, nil
+}
+
+// localCopies maps every profile id with a copy on this computer to its name: live profiles, profiles in
+// ShardBrowser's Trash, and this app's backups.
+func (e *Engine) localCopies() map[string]string {
+	names := map[string]string{}
+	locals, _ := ListLocalProfiles(e.Root)
+	for _, p := range locals {
+		names[p.ID] = p.Name
+	}
+	addDir := func(dir, suffix string) {
+		entries, _ := os.ReadDir(dir)
+		for _, en := range entries {
+			id := strings.TrimSuffix(en.Name(), suffix)
+			if _, seen := names[id]; !seen && uuidRe.MatchString(id) {
+				names[id] = id
+			}
+		}
+	}
+	addDir(filepath.Join(e.Root, "trash"), ".json")
+	addDir(e.backupDir, "")
+	for id := range names {
+		if !uuidRe.MatchString(id) {
+			delete(names, id)
+		}
+	}
+	return names
+}
+
+// removeLocal deletes every copy of a profile on this computer. The profile file goes last, so a failure
+// part-way leaves it listed and the next refresh tries again. Extensions are shared, so they stay.
+func (e *Engine) removeLocal(id string) error {
+	for _, p := range []string{
+		filepath.Join(e.Root, "user-data", id),
+		filepath.Join(e.Root, "trash", id+".zip"),
+		filepath.Join(e.Root, "trash", id+".json"),
+		filepath.Join(e.backupDir, id),
+		filepath.Join(e.Root, "profiles", id+".json"),
+	} {
+		if err := os.RemoveAll(p); err != nil {
+			return err
+		}
 	}
 	e.state.set(id, nil)
 	return nil

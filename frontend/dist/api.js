@@ -21,6 +21,7 @@
     setProfileAccess: (id, userIds) => go().SetProfileAccess(id, userIds),
     setFolderAccess: (folder, userIds) => go().SetFolderAccess(folder, userIds),
     setMemberRole: (userId, role) => go().SetMemberRole(userId, role),
+    setMemberStatus: (userId, status) => go().SetMemberStatus(userId, status),
     openBackups: () => go().OpenBackups(),
     openShardx: () => go().OpenShardx(),
     onProgress: (fn) => window.runtime.EventsOn('progress', fn),

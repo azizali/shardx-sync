@@ -412,15 +412,47 @@ func (c *Cloud) Register() (string, error) {
 
 // Member is one person on the team, as the admin sees them.
 type Member struct {
-	UserID string `json:"user_id"`
-	Email  string `json:"email"`
-	Role   string `json:"role"`
+	UserID  string `json:"user_id"`
+	Email   string `json:"email"`
+	Role    string `json:"role"`
+	Status  string `json:"status"`   // active | removed
+	WipedAt string `json:"wiped_at"` // when a removed member's app finished deleting its copies
 }
 
 func (c *Cloud) ListMembers() ([]Member, error) {
 	var out []Member
-	err := c.db("GET", "/team_members?select=user_id,email,role&order=email.asc", nil, &out)
+	err := c.db("GET", "/team_members?select=user_id,email,role,status,wiped_at&order=email.asc", nil, &out)
 	return out, err
+}
+
+// SetMemberStatus offboards a member ("removed") or brings them back ("active"). Admins only.
+func (c *Cloud) SetMemberStatus(userID, status string) error {
+	return c.db("POST", "/rpc/set_member_status", map[string]any{"p_user_id": userID, "p_status": status}, nil)
+}
+
+// ReportWipe tells admins that this removed member's app has deleted its copies.
+func (c *Cloud) ReportWipe() error {
+	return c.db("POST", "/rpc/report_wipe", map[string]any{}, nil)
+}
+
+// ProfileVerdicts asks what to do with each profile on this computer: "keep", "remove" (access ended or
+// deleted) or "unknown" (never uploaded).
+func (c *Cloud) ProfileVerdicts(ids []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		ID      string `json:"id"`
+		Verdict string `json:"verdict"`
+	}
+	if err := c.db("POST", "/rpc/profile_verdicts", map[string]any{"p_ids": ids}, &rows); err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		out[r.ID] = r.Verdict
+	}
+	return out, nil
 }
 
 // Grants lists who can see which profiles directly and which folders. Keys are profile ids and folder names.

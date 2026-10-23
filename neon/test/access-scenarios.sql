@@ -104,3 +104,43 @@ do $$ begin assert public.can_upload('11111111-1111-1111-1111-111111111111') is 
 do $$ begin assert public.can_upload('44444444-4444-4444-4444-444444444444') is true, 'carol: brand-new profile'; end $$;
 reset role;
 select 'STORAGE GATE OK' as result;
+
+-- Removal verdicts. Now: bob is the only admin, carol has p3 directly, p2 was deleted for good by bob.
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000c', 'carol@team');
+set role authenticated;
+do $$
+declare v text;
+begin
+  select verdict into v from public.profile_verdicts(array['33333333-3333-3333-3333-333333333333']::uuid[]);
+  assert v = 'keep', 'carol keeps her granted profile, got ' || v;
+  select verdict into v from public.profile_verdicts(array['11111111-1111-1111-1111-111111111111']::uuid[]);
+  assert v = 'remove', 'carol has no access to Clients, got ' || v;
+  select verdict into v from public.profile_verdicts(array['22222222-2222-2222-2222-222222222222']::uuid[]);
+  assert v = 'remove', 'deleted for good must be removed, got ' || v;
+  select verdict into v from public.profile_verdicts(array['55555555-5555-5555-5555-555555555555']::uuid[]);
+  assert v = 'unknown', 'never uploaded must be unknown, got ' || v;
+end $$;
+reset role;
+-- A deleted-for-good profile cannot come back from a stale copy.
+select pg_temp.expect_error($q$select public.commit_version('22222222-2222-2222-2222-222222222222', 0, 'Acme 1', 'Acme', 1, 10, 'x', 'p2z/', 'pc', 'darwin', false)$q$, 'DELETED');
+-- The admin keeps everything they hold.
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000b', 'bob@team');
+set role authenticated;
+do $$ begin assert (select verdict from public.profile_verdicts(array['11111111-1111-1111-1111-111111111111']::uuid[])) = 'keep', 'admin keeps'; end $$;
+reset role;
+-- The last active admin cannot be removed.
+select pg_temp.expect_error($q$select public.set_member_status('00000000-0000-0000-0000-00000000000b', 'removed')$q$, 'at least one admin');
+-- Offboard carol: she loses every grant, gets 'remove' for her profile, and reports the wipe.
+set role authenticated; select public.set_member_status('00000000-0000-0000-0000-00000000000c', 'removed'); reset role;
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000c', 'carol@team');
+set role authenticated;
+do $$ begin
+  assert public.register_me() = 'removed', 'carol should be told she was removed';
+  assert (select verdict from public.profile_verdicts(array['33333333-3333-3333-3333-333333333333']::uuid[])) = 'remove', 'removed member wipes';
+  assert public.can_upload('66666666-6666-6666-6666-666666666666') is false, 'removed member cannot upload';
+end $$;
+select public.report_wipe();
+reset role;
+select pg_temp.expect_count('select 1 from synced_profiles', 0, 'removed member sees nothing');
+do $$ begin assert (select wiped_at from team_members where email = 'carol@team') is not null, 'wipe recorded'; end $$;
+select 'REMOVAL SCENARIOS PASSED' as result;
